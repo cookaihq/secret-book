@@ -52,7 +52,7 @@ python3 "$SKILL_DIR/scripts/cred_ledger.py" <action> [flags]
 
 - 新建：`init-create [--base-name 凭证台账]` → 从输出提取 base token 与
   credentials 表 table_id → **向用户口头确认后** `config-write --app-token X --table-id Y`
-- 接管：`init-adopt --url <多维表格URL>` → 脚本校验 8 字段（缺列自动补建，
+- 接管：`init-adopt --url <多维表格URL>` → 脚本校验 9 字段（缺列自动补建，
   类型不符会报错拒绝接管，不要绕过）→ 确认后同上 `config-write`
 - `config-write` 默认写 `~/.config/cred-ledger/.env`；加 `--project` 写
   `$PWD/.env.local`（脚本会先验证该文件未被 git 跟踪且已被忽略）
@@ -69,6 +69,15 @@ python3 "$SKILL_DIR/scripts/cred_ledger.py" <action> [flags]
 
 payload 规则：值 = 首个 `=` 之后的原文（不去引号、不转义）、必须单行；
 多行 blob（SSH 私钥、证书）请用户先 base64 成一行存入，用时自行解码。
+
+### 可见范围（visible_to）
+
+表内人员字段 `visible_to` 控制记录级可见性：**为空 = 不受限；非空 = 仅名单内
+用户可取用**——当前用户（lark-cli user 身份的 open_id）不在名单里时，该记录在
+list/get/run/copy 全部路径上取不到（list 不显示、点名报「找不到」），无绕过
+flag。名单直接在多维表格里维护，脚本不提供写入口。取不到 open_id 时脚本报错
+退出，不放行受限记录。存量旧表缺此列时全表视为不受限，跑一次 `init-adopt`
+即自动补建。唯一例外：`save` 的 name 查重跨全表（含隐藏记录），避免重名。
 
 ### 项目绑定
 

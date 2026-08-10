@@ -58,9 +58,15 @@ ln -s "$(pwd)" ~/.agents/skills/cred-ledger   # Codex
 行为约定（agent 必须遵守，详见 [SKILL.md](SKILL.md)）：凭证值只经脚本流向
 子进程环境或剪贴板；多候选记录必须让用户点名，禁止 agent 自行猜选。
 
-## 表结构（8 列，init 自动创建）
+## 表结构（9 列，init 自动创建）
 
 `id`（sec_ 随机机器键）· `name`（人类别名）· `service` · `account` ·
-`purpose`（意图匹配主依据）· `secret`（dotenv payload）· `expires_at` · `notes`
+`purpose`（意图匹配主依据）· `secret`（dotenv payload）· `expires_at` · `notes` ·
+`visible_to`（人员，可见范围）
 
 直接在表格里手工加行也可以——缺 `id` 的行会在下次任意操作时自动补写。
+
+`visible_to` 为空时记录不受限；非空时仅名单内用户能取用——当前用户（lark-cli
+登录身份）不在名单里的记录，list 不显示、按 name/id 点名也取不到，没有绕过
+开关。名单直接在表格里维护。旧表缺这一列时全表不受限，跑一次 `init-adopt`
+会自动补建。

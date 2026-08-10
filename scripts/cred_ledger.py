@@ -37,6 +37,7 @@ FIELD_SCHEMA = [
     {"name": "secret", "type": "text"},
     {"name": "expires_at", "type": "datetime"},
     {"name": "notes", "type": "text"},
+    {"name": "visible_to", "type": "user", "multiple": True},
 ]
 META_FIELDS = ["id", "name", "service", "account", "purpose", "expires_at"]
 
@@ -160,9 +161,28 @@ def parse_payload(text: str) -> dict:
 class FeishuBackend:
     """飞书多维表格后端，经 lark-cli。所有方法只吞吐 {字段名: 字符串} 平面记录。"""
 
+    _open_id_cache: list = []  # 类级 memo：一次进程只查一次 auth status
+
     def __init__(self, app_token: str, table_id: str):
         self.app_token = app_token
         self.table_id = table_id
+
+    def current_user_open_id(self) -> str:
+        """当前 lark-cli user 身份的 open_id，visible_to 过滤的比对基准。
+        取不到时 die（fail-closed）：不能确定「我是谁」就不放行受限记录。"""
+        if not FeishuBackend._open_id_cache:
+            proc = subprocess.run(["lark-cli", "auth", "status"],
+                                  capture_output=True, text=True)
+            open_id = ""
+            try:
+                open_id = json.loads(proc.stdout)["identities"]["user"]["openId"]
+            except (json.JSONDecodeError, KeyError, TypeError):
+                pass
+            if proc.returncode != 0 or not open_id:
+                die("无法从 lark-cli auth status 获取当前用户 open_id，"
+                    "无法执行 visible_to 可见范围过滤，拒绝继续。请先完成 user 身份登录")
+            FeishuBackend._open_id_cache.append(open_id)
+        return FeishuBackend._open_id_cache[0]
 
     def _run(self, shortcut: str, extra: list, risk_write: bool = False) -> dict:
         cmd = ["lark-cli", "base", shortcut, "--as", "user", "--format", "json",
@@ -208,12 +228,19 @@ class FeishuBackend:
         rec = {name: self._cell_str(fields.get(name)) for name in
                ("id", "name", "service", "account", "purpose", "secret", "notes")}
         rec["expires_at"] = _fmt_expires(fields.get("expires_at"))
+        # 人员单元格 = [{"id": "ou_xxx", "name": "..."}]，空为 null；缺列（存量
+        # 8 列表）投影被忽略、取值 None，等价于空 = 不受限（实测 lark-cli 1.0.82）
+        cell = fields.get("visible_to")
+        users = [u for u in cell if isinstance(u, dict)] if isinstance(cell, list) else []
+        rec["_visible_to_ids"] = [str(u.get("id", "")) for u in users]
+        rec["visible_to"] = ", ".join(u.get("name") or u.get("id", "") for u in users)
         rec["_record_id"] = fields.get("_record_id", "")
         return rec
 
-    def list_records(self, filter_json: str | None = None, with_secret: bool = False) -> list:
+    def list_records(self, filter_json: str | None = None, with_secret: bool = False,
+                     visible_only: bool = True) -> list:
         projection = []
-        for f in META_FIELDS + (["secret"] if with_secret else []):
+        for f in META_FIELDS + ["visible_to"] + (["secret"] if with_secret else []):
             projection += ["--field-id", f]
         records, offset = [], 0
         while True:
@@ -223,12 +250,17 @@ class FeishuBackend:
             rows, has_more = self._rows(self._run("+record-list", extra))
             records += [self._flatten(r) for r in rows]
             if not has_more:
-                return records
+                break
             offset += 200
+        if visible_only and any(r["_visible_to_ids"] for r in records):
+            me = self.current_user_open_id()
+            records = [r for r in records
+                       if not r["_visible_to_ids"] or me in r["_visible_to_ids"]]
+        return records
 
-    def find(self, by: str, value: str, with_secret: bool) -> list:
+    def find(self, by: str, value: str, with_secret: bool, visible_only: bool = True) -> list:
         cond = json.dumps({"logic": "and", "conditions": [[by, "==", value]]}, ensure_ascii=False)
-        return self.list_records(filter_json=cond, with_secret=with_secret)
+        return self.list_records(filter_json=cond, with_secret=with_secret, visible_only=visible_only)
 
     def create_record(self, fields: dict) -> None:
         body = json.dumps({"create_records": [fields]}, ensure_ascii=False)
@@ -307,7 +339,8 @@ def cmd_save(args) -> None:
     payload_text = sys.stdin.read()
     pairs = parse_payload(payload_text)
     backend = require_backend(args)
-    if backend.find("name", args.name, with_secret=False):
+    # 查重跨全表（含对当前用户隐藏的记录）：name 是全局查找键，可见范围不豁免唯一性
+    if backend.find("name", args.name, with_secret=False, visible_only=False):
         die(f"name={args.name} 已存在；换一个别名，或直接在表格里编辑该记录")
     fields = {
         "id": gen_id(),
@@ -344,7 +377,7 @@ def cmd_list(args) -> None:
 def cmd_get(args) -> None:
     backend = require_backend(args)
     rec = resolve_records(backend, args, need_secret=True)[0]
-    for key in META_FIELDS + ["notes"]:
+    for key in META_FIELDS + ["visible_to", "notes"]:
         print(f"{key}: {rec.get(key, '')}")
     print(f"keys: {', '.join(parse_payload(rec['secret']))}")
 
@@ -502,7 +535,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--key")
     sp.set_defaults(func=cmd_copy)
 
-    sp = sub.add_parser("init-create", help="新建台账 Base（credentials 表 + 8 字段）")
+    sp = sub.add_parser("init-create", help="新建台账 Base（credentials 表 + 9 字段）")
     sp.add_argument("--base-name", default="凭证台账")
     sp.set_defaults(func=cmd_init_create)
 
