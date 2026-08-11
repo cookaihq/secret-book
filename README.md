@@ -1,8 +1,11 @@
-# cred-ledger
+# secret-book
 
 **凭证台账 + agent 取用通道**：把 token、API key、账号密码、OSS/数据库配置组
 登记在你自己的飞书多维表格里；Claude Code / Codex 等 agent 通过本 skill 按
-意图或精确 ID 查询取用，取用输出一律掩码。
+意图或精确 ID 查询取用，取用输出一律掩码。用过一次的凭证会按
+（项目, 命令）自动记住，下次缺配置时直接按 id 注入重试。
+
+> 本仓库原名 `cred-ledger`，2026-08-10 更名为 `secret-book`。
 
 ## ⚠️ 请先读这一段
 
@@ -11,7 +14,7 @@
   保留 180 天历史记录，删除另有 30 天回收站。
 - 只建议存**可随时轮换的中低价值凭证**，并把台账表权限收紧到仅本人。
 - 高价值凭证请使用 1Password 等专业密码管理器（其端到端加密架构严格强于
-  本工具）。cred-ledger 的定位是：数据在你自己的租户里、飞书生态零新增
+  本工具）。secret-book 的定位是：数据在你自己的租户里、飞书生态零新增
   账号、agent 原生取用、免费。
 
 ## 它解决什么
@@ -20,7 +23,11 @@
   到期提醒用多维表格原生自动化即可配置
 - agent 要用凭证时反复问你要：`run` 把凭证注入子进程环境执行命令、`copy`
   把值送进剪贴板——**值不上屏、不进会话记录**
-- 项目与凭证解耦：项目 `.env.local` 里只放指针（`CRED_LEDGER_IDS=sec_xxx`），
+- 缺配置自动兜底：`agent-rule --install` 把兜底规则写进各主流 agent
+  （Claude Code / Codex / Gemini CLI / OpenCode / Qwen Code / iFlow / Amp /
+  Windsurf / Cline / Copilot CLI / Goose）的全局指令文件；此后任何命令因缺
+  key 失败，agent 会先查台账注入重试，用过一次即绑定、下次 `run --auto` 直用
+- 项目与凭证解耦：项目 `.env.local` 里只放指针（`SECRET_BOOK_IDS=sec_xxx`），
   真实凭证全在台账
 
 ## 快速开始
@@ -29,21 +36,33 @@
 
 ```bash
 # 1. 初始化（新建台账 Base，或用 init-adopt --url 接管已有表）
-python3 scripts/cred_ledger.py init-create
-python3 scripts/cred_ledger.py config-write --app-token <base_token> --table-id <table_id>
+python3 scripts/secret_book.py init-create
+python3 scripts/secret_book.py config-write --app-token <base_token> --table-id <table_id>
 
 # 2. 保存一组凭证（payload 走 stdin，dotenv 格式）
-echo "GITHUB_TOKEN=ghp_xxx" | python3 scripts/cred_ledger.py save \
+echo "GITHUB_TOKEN=ghp_xxx" | python3 scripts/secret_book.py save \
   --name github-main --service github --purpose "主账号推送" --use-global-config
 
 # 3. 使用
-python3 scripts/cred_ledger.py run  --name github-main --use-global-config -- git push origin main
-python3 scripts/cred_ledger.py copy --name site-admin --key PASSWORD --use-global-config
-python3 scripts/cred_ledger.py list --use-global-config
+python3 scripts/secret_book.py run  --name github-main --use-global-config -- git push origin main
+python3 scripts/secret_book.py copy --name site-admin --key PASSWORD --use-global-config
+python3 scripts/secret_book.py list --use-global-config
+
+# 4.（可选）安装缺配置兜底规则到各 agent 全局指令文件
+python3 scripts/secret_book.py agent-rule            # 先看检测与安装状态
+python3 scripts/secret_book.py agent-rule --install  # 确认后安装，--remove 可卸载
 ```
 
 记录 = **凭证组**：`secret` 列是 dotenv 格式键值对，单 token 是单键退化情形，
 OSS 一套 AK/SK/Endpoint/Bucket 是一条四键记录，`run` 一次全量注入。
+
+## 自动绑定
+
+`run --id sec_xxx --bind -- <命令>` 成功后，(项目根, 命令名) → 记录 id 的
+映射存进本机 `~/.config/secret-book/bindings.json`（只存元数据，无凭证值）。
+之后 `run --auto -- <命令>` 直接按 id 注入；绑定按 id 存储，凭证轮换、记录
+改名都不影响；记录删除时自动解除绑定。`bindings` 列出全部，`unbind` 解除。
+注入后仍鉴权失败时应先 `unbind` 再重新匹配，防止错误绑定反复注入。
 
 ## 作为 Agent Skill 安装
 
@@ -51,12 +70,13 @@ OSS 一套 AK/SK/Endpoint/Bucket 是一条四键记录，`run` 一次全量注�
 Codex 通用。clone 后建 symlink：
 
 ```bash
-ln -s "$(pwd)" ~/.claude/skills/cred-ledger   # Claude Code
-ln -s "$(pwd)" ~/.agents/skills/cred-ledger   # Codex
+ln -s "$(pwd)" ~/.claude/skills/secret-book   # Claude Code
+ln -s "$(pwd)" ~/.agents/skills/secret-book   # Codex
 ```
 
 行为约定（agent 必须遵守，详见 [SKILL.md](SKILL.md)）：凭证值只经脚本流向
-子进程环境或剪贴板；多候选记录必须让用户点名，禁止 agent 自行猜选。
+子进程环境或剪贴板；多候选记录必须让用户点名，禁止 agent 自行猜选；
+`agent-rule --install` 前必须向用户展示目标文件与规则全文并取得同意。
 
 ## 表结构（9 列，init 自动创建）
 

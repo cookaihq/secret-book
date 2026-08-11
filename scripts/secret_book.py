@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""cred-ledger — 凭证台账 CLI（飞书多维表格后端）。
+"""secret-book — 凭证台账 CLI（飞书多维表格后端）。
 
 明文台账 + agent 取用通道：本脚本负责查表、注入、掩码；不做加密。
 安全声明见仓库 README 与 SKILL.md 第一屏。
@@ -9,11 +9,15 @@
 
 掩码纪律：凭证值只流向子进程环境（run）或剪贴板（copy），不打印、不进
 错误消息；本进程输出中的凭证值一律经 _scrub() 掩码。
+
+自动绑定与多 agent 兜底规则的设计记录：外层仓
+docs/deliverables/secret-book/agent-rule-and-bindings.md。
 """
 
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import os
 import re
@@ -23,10 +27,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-SKILL_NAME = "cred-ledger"
-ENV_APP_TOKEN = "CRED_LEDGER_APP_TOKEN"
-ENV_TABLE_ID = "CRED_LEDGER_TABLE_ID"
-ENV_IDS = "CRED_LEDGER_IDS"
+SKILL_NAME = "secret-book"
+ENV_APP_TOKEN = "SECRET_BOOK_APP_TOKEN"
+ENV_TABLE_ID = "SECRET_BOOK_TABLE_ID"
+ENV_IDS = "SECRET_BOOK_IDS"
 
 FIELD_SCHEMA = [
     {"name": "id", "type": "text"},
@@ -99,9 +103,9 @@ def _parse_env_file(path: Path) -> dict:
 
 def load_config(use_global: bool) -> dict:
     """每个变量独立 first-found-wins：进程环境 → $PWD/.env.local → $PWD/.env
-    → （仅 --use-global-config 时）~/.config/cred-ledger/.env。"""
+    → （仅 --use-global-config 时）~/.config/secret-book/.env。"""
     layers = [
-        {k: v for k, v in os.environ.items() if k.startswith("CRED_LEDGER_")},
+        {k: v for k, v in os.environ.items() if k.startswith("SECRET_BOOK_")},
         _parse_env_file(Path.cwd() / ".env.local"),
         _parse_env_file(Path.cwd() / ".env"),
     ]
@@ -292,7 +296,7 @@ def backfill_ids(backend: FeishuBackend, records: list) -> None:
 
 
 def resolve_records(backend: FeishuBackend, args, need_secret: bool) -> list:
-    """按 --id / --name / CRED_LEDGER_IDS 的顺序解析目标记录。"""
+    """按 --id / --name / SECRET_BOOK_IDS 的顺序解析目标记录。"""
     ids: list = list(getattr(args, "id", None) or [])
     name = getattr(args, "name", None)
     if not ids and not name:
@@ -331,6 +335,94 @@ def merged_env_pairs(records: list) -> dict:
                 die(f"键名冲突：{key} 同时来自记录 {owner[key]} 与 {rec['name'] or rec['id']}")
             merged[key], owner[key] = val, rec["name"] or rec["id"]
     return merged
+
+
+# ---------- 自动绑定（bindings.json）----------
+# (项目根, 命令名) → 记录 id 列表。只存元数据不存值；本机私有，不同步进台账
+# （里面是本机路径，跨机器诉求走项目 .env.local 的 SECRET_BOOK_IDS 显式绑定）。
+
+def bindings_path() -> Path:
+    return Path.home() / ".config" / SKILL_NAME / "bindings.json"
+
+
+def _load_bindings() -> dict:
+    path = bindings_path()
+    if not path.is_file():
+        return {"version": 1, "bindings": []}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        die(f"{path} 不是合法 JSON，请检查或删除该文件后重试")
+    data.setdefault("bindings", [])
+    return data
+
+
+def _save_bindings(data: dict) -> None:
+    path = bindings_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.chmod(0o700)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    tmp.chmod(0o600)
+    tmp.replace(path)  # 原子替换；并发写 last-writer-wins（元数据缓存可接受）
+
+
+def _project_scope() -> str:
+    proc = subprocess.run(["git", "rev-parse", "--show-toplevel"],
+                          capture_output=True, text=True)
+    root = proc.stdout.strip() if proc.returncode == 0 and proc.stdout.strip() else str(Path.cwd())
+    return str(Path(root).resolve())
+
+
+def _find_binding(data: dict, scope: str, command: str) -> dict | None:
+    for entry in data["bindings"]:
+        if entry.get("scope") == scope and entry.get("command") == command:
+            return entry
+    return None
+
+
+def _now() -> str:
+    return datetime.datetime.now().isoformat(timespec="seconds")
+
+
+def _warn_expired(records: list) -> None:
+    today = datetime.date.today().isoformat()
+    for rec in records:
+        exp = rec.get("expires_at", "")
+        if exp and exp[:10] < today:
+            info(f"警告：记录 {rec['name'] or rec['id']} 已于 {exp} 过期（仍继续执行）")
+
+
+def _resolve_auto(backend: FeishuBackend, args) -> list:
+    """run --auto 的解析：项目显式绑定 SECRET_BOOK_IDS 优先于 bindings.json；
+    无绑定或绑定失效以退出码 3 结束（agent 据此转入 list+意图匹配流程）。"""
+    cfg = load_config(args.use_global_config)
+    if cfg.get(ENV_IDS):
+        info(f"使用项目显式绑定 {ENV_IDS}={cfg[ENV_IDS]}")
+        return resolve_records(backend, args, need_secret=True)
+    scope, cmdname = _project_scope(), Path(args.command[0]).name
+    data = _load_bindings()
+    entry = _find_binding(data, scope, cmdname)
+    if entry is None:
+        info(f"无绑定（项目={scope}, 命令={cmdname}）。请走 list+意图匹配流程，"
+             "匹配成功后用 run --bind 建立绑定")
+        sys.exit(3)
+    records, stale = [], []
+    for sid in entry["ids"]:
+        matches = backend.find("id", sid, with_secret=True)
+        records.extend(matches) if matches else stale.append(sid)
+    if stale:
+        data["bindings"].remove(entry)
+        _save_bindings(data)
+        info(f"绑定失效：记录 {', '.join(stale)} 已不在台账，绑定已自动解除。请重新匹配")
+        sys.exit(3)
+    for rec in records:
+        parse_payload(rec["secret"])  # 把值登记进 _SENSITIVE
+    entry["last_used"], entry["hits"] = _now(), entry.get("hits", 0) + 1
+    _save_bindings(data)
+    info("按绑定使用 " + ", ".join(
+        f"{r['id']}（{r['name']}, service={r['service']}）" for r in records))
+    return records
 
 
 # ---------- 动作 ----------
@@ -385,16 +477,67 @@ def cmd_get(args) -> None:
 def cmd_run(args) -> None:
     if not args.command:
         die("run 需要 '-- <命令>'")
+    if args.auto and (args.name or args.id):
+        die("--auto 与 --name/--id 互斥：绑定查找与显式指定二选一")
     backend = require_backend(args)
-    records = resolve_records(backend, args, need_secret=True)
+    binding_to_save = None
+    if args.auto:
+        records = _resolve_auto(backend, args)
+    else:
+        records = resolve_records(backend, args, need_secret=True)
+        if args.bind:
+            binding_to_save = {"scope": _project_scope(),
+                               "command": Path(args.command[0]).name,
+                               "ids": [r["id"] for r in records]}
     pairs = merged_env_pairs(records)
+    _warn_expired(records)
     env = dict(os.environ)
     env.update(pairs)
     info(f"注入 {len(pairs)} 个变量（{', '.join(pairs)}）后执行：{' '.join(args.command)}")
+    if binding_to_save is None:
+        try:
+            os.execvpe(args.command[0], args.command, env)
+        except FileNotFoundError:
+            die(f"命令不存在：{args.command[0]}")
+    # --bind 需要观察子进程退出码（成功才落绑定），所以不能 execvpe 替换进程
     try:
-        os.execvpe(args.command[0], args.command, env)
+        proc = subprocess.run(args.command, env=env)
     except FileNotFoundError:
         die(f"命令不存在：{args.command[0]}")
+    if proc.returncode == 0:
+        data = _load_bindings()
+        existing = _find_binding(data, binding_to_save["scope"], binding_to_save["command"])
+        if existing:
+            data["bindings"].remove(existing)
+        binding_to_save.update({"created": (existing or {}).get("created", _now()),
+                                "last_used": _now(),
+                                "hits": (existing or {}).get("hits", 0) + 1})
+        data["bindings"].append(binding_to_save)
+        _save_bindings(data)
+        info(f"已绑定（项目={binding_to_save['scope']}, 命令={binding_to_save['command']}）"
+             f"→ {', '.join(binding_to_save['ids'])}；下次 run --auto 直用，unbind 可解除")
+    sys.exit(proc.returncode)
+
+
+def cmd_bindings(args) -> None:
+    data = _load_bindings()
+    if not data["bindings"]:
+        info("无自动绑定")
+        return
+    for e in data["bindings"]:
+        print(f"{e['scope']}  {e['command']}  →  {', '.join(e['ids'])}"
+              f"  (last_used={e.get('last_used', '')}, hits={e.get('hits', 0)})")
+
+
+def cmd_unbind(args) -> None:
+    scope = str(Path(args.scope).resolve()) if args.scope else _project_scope()
+    data = _load_bindings()
+    entry = _find_binding(data, scope, args.command_name)
+    if entry is None:
+        die(f"无此绑定（项目={scope}, 命令={args.command_name}）。用 bindings 列出全部")
+    data["bindings"].remove(entry)
+    _save_bindings(data)
+    info(f"已解除绑定（项目={scope}, 命令={args.command_name}）")
 
 
 def cmd_copy(args) -> None:
@@ -474,6 +617,8 @@ def cmd_config_write(args) -> None:
     target.write_text("\n".join(kept) + "\n", encoding="utf-8")
     target.chmod(0o600)
     info(f"配置已写入 {target}")
+    info("提示：可用 agent-rule 检查/安装「缺配置兜底」规则到各 agent 的全局指令文件"
+         "（安装前须把目标文件与规则全文给用户确认）")
 
 
 def _assert_untracked_ignored(target: Path) -> None:
@@ -490,6 +635,121 @@ def _assert_untracked_ignored(target: Path) -> None:
                              capture_output=True, text=True)
     if ignored.returncode != 0:
         die(f"{target.name} 未被 .gitignore 忽略，拒绝写入配置。先把它加入 .gitignore")
+
+
+# ---------- agent-rule（多 Agent 全局指令文件的兜底规则块）----------
+
+RULE_VERSION = 1
+RULE_BEGIN = re.compile(r"<!-- secret-book:fallback-rule v(\d+) -->")
+RULE_END = "<!-- /secret-book:fallback-rule -->"
+
+# (key, 名称, 检测目录, 目标文件, 模式)。模式 block=共享文件里追加哨兵块；
+# file=独立文件整份归本 skill；manual=无全局文件（不可脚本写入），输出手动指引。
+# 各路径均经官方文档逐家查证，来源清单见外层仓
+# docs/deliverables/secret-book/agent-rule-and-bindings.md（2026-08-10）。
+AGENT_TARGETS = [
+    ("claude-code", "Claude Code", "~/.claude", "~/.claude/CLAUDE.md", "block"),
+    ("codex", "Codex CLI", "~/.codex", "~/.codex/AGENTS.md", "block"),
+    ("gemini", "Gemini CLI", "~/.gemini", "~/.gemini/GEMINI.md", "block"),
+    ("opencode", "OpenCode", "~/.config/opencode", "~/.config/opencode/AGENTS.md", "block"),
+    ("qwen", "Qwen Code", "~/.qwen", "~/.qwen/QWEN.md", "block"),
+    ("iflow", "iFlow CLI", "~/.iflow", "~/.iflow/IFLOW.md", "block"),
+    ("amp", "Amp", "~/.config/amp", "~/.config/amp/AGENTS.md", "block"),
+    ("windsurf", "Windsurf", "~/.codeium/windsurf",
+     "~/.codeium/windsurf/memories/global_rules.md", "block"),
+    ("cline", "Cline", "~/Documents/Cline", "~/Documents/Cline/Rules/secret-book.md", "file"),
+    ("copilot", "Copilot CLI", "~/.copilot",
+     "~/.copilot/instructions/secret-book.instructions.md", "file"),
+    ("goose", "Goose", "~/.config/goose", "~/.config/goose/AGENTS.md", "block"),
+    ("cursor", "Cursor", "~/.cursor", None, "manual"),
+]
+WINDSURF_CHAR_LIMIT = 6000  # global_rules.md 官方字符上限
+
+
+def rule_block() -> str:
+    script = os.path.realpath(__file__)
+    return f"""<!-- secret-book:fallback-rule v{RULE_VERSION} -->
+## secret-book 凭证兜底
+命令或 skill 因缺少凭证/API key/token 配置而失败时：
+1. 先试 `python3 {script} run --auto --use-global-config -- <原命令>`；命中绑定即注入重试，退出码 3 = 无绑定。
+2. 无绑定则 `python3 {script} list --use-global-config` 查元数据按意图匹配：唯一命中 → `run --id <id> --bind --use-global-config -- <原命令>`（成功自动记住绑定）；多条候选或无命中 → 列给用户选择，禁止自选。
+3. 注入后仍鉴权失败 → `unbind --command <命令名>` 解除绑定后重新匹配，禁止重试同一绑定。
+4. MCP server 缺配置无法注入已运行进程：用 `copy` 取值引导用户配置后重启会话。凭证值一律不上屏。
+{RULE_END}"""
+
+
+def _inspect_target(text: str) -> tuple[str, tuple[int, int] | None]:
+    """返回 (状态, 规则块在文本中的位置)。状态：missing/current/outdated/modified。"""
+    m = RULE_BEGIN.search(text)
+    if not m:
+        return "missing", None
+    end = text.find(RULE_END, m.start())
+    if end < 0:  # 起始哨兵在、结束哨兵丢了：按手工改动处理，不自动覆盖
+        return "modified", (m.start(), len(text))
+    span = (m.start(), end + len(RULE_END))
+    if int(m.group(1)) < RULE_VERSION:
+        return "outdated", span
+    return ("current" if text[span[0]:span[1]] == rule_block() else "modified"), span
+
+
+def cmd_agent_rule(args) -> None:
+    only = set(args.agent or [])
+    known = {k for k, *_ in AGENT_TARGETS}
+    if only - known:
+        die(f"未知 agent key：{', '.join(sorted(only - known))}（可用：{', '.join(sorted(known))}）")
+    action = "install" if args.install else ("remove" if args.remove else "check")
+    for key, label, detect, target, mode in AGENT_TARGETS:
+        if only and key not in only:
+            continue
+        tag = f"{key:12} {label:12}"
+        if not Path(detect).expanduser().is_dir():
+            print(f"{tag} 未检测到（{detect} 不存在），跳过")
+            continue
+        if mode == "manual":
+            if action == "install":
+                print(f"{tag} 无全局指令文件（User Rules 存 IDE 设置内），"
+                      "请手动把下面的规则粘贴进 Cursor Settings → Rules：")
+                print(rule_block())
+            else:
+                print(f"{tag} 无全局指令文件，不可脚本写入（如已手动粘贴请手动维护）")
+            continue
+        path = Path(target).expanduser()
+        text = path.read_text(encoding="utf-8") if path.is_file() else ""
+        status, span = _inspect_target(text)
+        if action == "check":
+            print(f"{tag} {status:9} {path}")
+            continue
+        if action == "remove":
+            if status == "missing":
+                print(f"{tag} 本就未安装，跳过")
+                continue
+            remaining = (text[:span[0]] + text[span[1]:]).strip("\n")
+            if mode == "file" and not remaining.strip():
+                path.unlink()
+                print(f"{tag} 已删除 {path}")
+            else:
+                path.write_text(remaining + ("\n" if remaining else ""), encoding="utf-8")
+                print(f"{tag} 已移除规则块：{path}")
+            continue
+        # install
+        if status == "current":
+            print(f"{tag} 已是最新，跳过")
+            continue
+        if status == "modified" and not args.force:
+            print(f"{tag} 规则块有手工改动，跳过（--force 覆盖）：{path}")
+            continue
+        block = rule_block()
+        if span:
+            new_text = text[:span[0]] + block + text[span[1]:]
+        else:
+            new_text = (text.rstrip("\n") + "\n\n" if text.strip() else "") + block + "\n"
+        if key == "windsurf" and len(new_text) > WINDSURF_CHAR_LIMIT:
+            print(f"{tag} 跳过：写入后 {len(new_text)} 字符超过 {WINDSURF_CHAR_LIMIT} 上限，"
+                  f"请手工精简 {path} 后重试")
+            continue
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(new_text, encoding="utf-8")
+        print(f"{tag} {'已安装' if status == 'missing' else '已更新'}：{path}")
 
 
 # ---------- CLI ----------
@@ -526,9 +786,30 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("run", help="键值对注入子进程环境后执行命令")
     common(sp, with_lookup=True)
+    sp.add_argument("--auto", action="store_true",
+                    help="按 (项目根, 命令名) 查历史绑定注入；无绑定退出码 3")
+    sp.add_argument("--bind", action="store_true",
+                    help="子进程退出码 0 时把本次记录绑定到 (项目根, 命令名)")
     sp.add_argument("command", nargs=argparse.REMAINDER,
                     help="'-- <命令及参数>'")
     sp.set_defaults(func=cmd_run)
+
+    sp = sub.add_parser("bindings", help="列出全部自动绑定（bindings.json）")
+    sp.set_defaults(func=cmd_bindings)
+
+    sp = sub.add_parser("unbind", help="解除一条自动绑定")
+    sp.add_argument("--command", dest="command_name", required=True, help="命令名（basename）")
+    sp.add_argument("--scope", help="项目根路径，默认当前项目")
+    sp.set_defaults(func=cmd_unbind)
+
+    sp = sub.add_parser("agent-rule",
+                        help="检查/安装/移除各 agent 全局指令文件里的缺配置兜底规则块")
+    g = sp.add_mutually_exclusive_group()
+    g.add_argument("--install", action="store_true")
+    g.add_argument("--remove", action="store_true")
+    sp.add_argument("--agent", action="append", help="只处理指定 agent key，可重复")
+    sp.add_argument("--force", action="store_true", help="覆盖有手工改动的规则块")
+    sp.set_defaults(func=cmd_agent_rule)
 
     sp = sub.add_parser("copy", help="单个值写入剪贴板（多键记录需 --key）")
     common(sp, with_lookup=True)
