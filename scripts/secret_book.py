@@ -31,6 +31,7 @@ SKILL_NAME = "secret-book"
 ENV_APP_TOKEN = "SECRET_BOOK_APP_TOKEN"
 ENV_TABLE_ID = "SECRET_BOOK_TABLE_ID"
 ENV_IDS = "SECRET_BOOK_IDS"
+ENV_LARK_PROFILE = "SECRET_BOOK_LARK_PROFILE"
 
 FIELD_SCHEMA = [
     {"name": "id", "type": "text"},
@@ -112,7 +113,7 @@ def load_config(use_global: bool) -> dict:
     if use_global:
         layers.append(_parse_env_file(global_config_path()))
     merged: dict = {}
-    for key in (ENV_APP_TOKEN, ENV_TABLE_ID, ENV_IDS):
+    for key in (ENV_APP_TOKEN, ENV_TABLE_ID, ENV_IDS, ENV_LARK_PROFILE):
         for layer in layers:
             if layer.get(key):
                 merged[key] = layer[key]
@@ -124,13 +125,23 @@ def global_config_path() -> Path:
     return Path.home() / ".config" / SKILL_NAME / ".env"
 
 
+def resolve_profile(args) -> str:
+    """台账所在租户对应的 lark-cli profile 名。`--lark-profile` 高于配置分层
+    （init-create / init-adopt 在配置写入之前执行，只能靠 flag 指定租户）。
+    空 = 不传 --profile，沿用 lark-cli 当前 active profile。"""
+    flag = getattr(args, "lark_profile", None)
+    if flag:
+        return flag
+    return load_config(getattr(args, "use_global_config", False)).get(ENV_LARK_PROFILE, "")
+
+
 def require_backend(args) -> "FeishuBackend":
     cfg = load_config(args.use_global_config)
     app_token, table_id = cfg.get(ENV_APP_TOKEN), cfg.get(ENV_TABLE_ID)
     if not app_token or not table_id:
         hint = "" if args.use_global_config else "（未启用全局配置；若已 init，请加 --use-global-config）"
         die(f"缺少 {ENV_APP_TOKEN} / {ENV_TABLE_ID} 配置{hint}。先运行 init-create 或 init-adopt。")
-    return FeishuBackend(app_token, table_id)
+    return FeishuBackend(app_token, table_id, resolve_profile(args))
 
 
 # ---------- payload（secret 列的 dotenv）----------
@@ -165,17 +176,25 @@ def parse_payload(text: str) -> dict:
 class FeishuBackend:
     """飞书多维表格后端，经 lark-cli。所有方法只吞吐 {字段名: 字符串} 平面记录。"""
 
-    _open_id_cache: list = []  # 类级 memo：一次进程只查一次 auth status
+    _open_id_cache: dict = {}  # profile 名 → open_id，一个 profile 只查一次 auth status
 
-    def __init__(self, app_token: str, table_id: str):
+    def __init__(self, app_token: str, table_id: str, profile: str = ""):
         self.app_token = app_token
         self.table_id = table_id
+        # 空 = 不传 --profile，沿用 lark-cli 当前 active profile
+        self.profile = profile or ""
+
+    def _profile_args(self) -> list:
+        return ["--profile", self.profile] if self.profile else []
+
+    def _profile_note(self) -> str:
+        return f"（profile={self.profile}）" if self.profile else "（未指定 profile，用的是 lark-cli 当前 active profile）"
 
     def current_user_open_id(self) -> str:
         """当前 lark-cli user 身份的 open_id，visible_to 过滤的比对基准。
         取不到时 die（fail-closed）：不能确定「我是谁」就不放行受限记录。"""
-        if not FeishuBackend._open_id_cache:
-            proc = subprocess.run(["lark-cli", "auth", "status"],
+        if self.profile not in FeishuBackend._open_id_cache:
+            proc = subprocess.run(["lark-cli", "auth", "status", *self._profile_args()],
                                   capture_output=True, text=True)
             open_id = ""
             try:
@@ -183,17 +202,20 @@ class FeishuBackend:
             except (json.JSONDecodeError, KeyError, TypeError):
                 pass
             if proc.returncode != 0 or not open_id:
-                die("无法从 lark-cli auth status 获取当前用户 open_id，"
-                    "无法执行 visible_to 可见范围过滤，拒绝继续。请先完成 user 身份登录")
-            FeishuBackend._open_id_cache.append(open_id)
-        return FeishuBackend._open_id_cache[0]
+                die(f"无法从 lark-cli auth status 获取当前用户 open_id{self._profile_note()}，"
+                    "无法执行 visible_to 可见范围过滤，拒绝继续。"
+                    "请确认该 profile 存在且已完成 user 身份登录（lark-cli profile list）")
+            FeishuBackend._open_id_cache[self.profile] = open_id
+        return FeishuBackend._open_id_cache[self.profile]
 
     def _run(self, shortcut: str, extra: list, risk_write: bool = False) -> dict:
         cmd = ["lark-cli", "base", shortcut, "--as", "user", "--format", "json",
+               *self._profile_args(),
                "--base-token", self.app_token, "--table-id", self.table_id, *extra]
         proc = subprocess.run(cmd, capture_output=True, text=True)
         if proc.returncode != 0:
-            die(f"lark-cli {shortcut} 失败 (exit {proc.returncode}): {proc.stderr.strip()[:500]}")
+            die(f"lark-cli {shortcut} 失败 (exit {proc.returncode}){self._profile_note()}: "
+                f"{proc.stderr.strip()[:500]}")
         try:
             return json.loads(proc.stdout) if proc.stdout.strip() else {}
         except json.JSONDecodeError:
@@ -563,20 +585,26 @@ def cmd_copy(args) -> None:
 
 
 def cmd_init_create(args) -> None:
+    profile = resolve_profile(args)
+    profile_args = ["--profile", profile] if profile else []
     cmd = ["lark-cli", "base", "+base-create", "--as", "user", "--format", "json",
+           *profile_args,
            "--name", args.base_name, "--table-name", "credentials",
            "--fields", json.dumps(FIELD_SCHEMA, ensure_ascii=False)]
     proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode != 0:
         die(f"+base-create 失败 (exit {proc.returncode}): {proc.stderr.strip()[:500]}")
     print(proc.stdout)
+    hint = f" --lark-profile {profile}" if profile else ""
     info("请从上方返回中提取 base token（app_token）与 credentials 表的 table_id，"
-         "与用户确认后运行 config-write 写入全局配置")
+         f"与用户确认后运行 config-write{hint} 写入全局配置")
 
 
 def cmd_init_adopt(args) -> None:
+    profile = resolve_profile(args)
+    profile_args = ["--profile", profile] if profile else []
     proc = subprocess.run(["lark-cli", "base", "+url-resolve", "--as", "user",
-                           "--format", "json", "--url", args.url],
+                           "--format", "json", *profile_args, "--url", args.url],
                           capture_output=True, text=True)
     if proc.returncode != 0:
         die(f"+url-resolve 失败 (exit {proc.returncode}): {proc.stderr.strip()[:500]}")
@@ -586,7 +614,7 @@ def cmd_init_adopt(args) -> None:
     table_id = inner.get("table_id")
     if not app_token or not table_id:
         die(f"无法从 URL 解析 base_token/table_id，+url-resolve 返回：{json.dumps(inner, ensure_ascii=False)[:300]}")
-    backend = FeishuBackend(app_token, table_id)
+    backend = FeishuBackend(app_token, table_id, profile)
     listed = backend._run("+field-list", ["--limit", "200"])
     # +field-list 返回 data.fields = [{name, type, ...}]（实测 lark-cli 1.0.82）
     existing = {str(it.get("name", "")): str(it.get("type", ""))
@@ -598,11 +626,11 @@ def cmd_init_adopt(args) -> None:
             info(f"已补建缺失字段 {name} ({want})")
         elif str(existing[name]) not in (want, ""):
             die(f"字段 {name} 类型不符：表内为 {existing[name]}，需要 {want}。拒绝接管脏表（design.md §5），请修正后重试")
-    info(f"字段校验通过。与用户确认后运行 config-write --app-token {app_token} --table-id {table_id}")
+    hint = f" --lark-profile {profile}" if profile else ""
+    info(f"字段校验通过。与用户确认后运行 config-write --app-token {app_token} --table-id {table_id}{hint}")
 
 
 def cmd_config_write(args) -> None:
-    content = f"{ENV_APP_TOKEN}={args.app_token}\n{ENV_TABLE_ID}={args.table_id}\n"
     if args.project:
         target = Path.cwd() / ".env.local"
         _assert_untracked_ignored(target)
@@ -613,10 +641,18 @@ def cmd_config_write(args) -> None:
     existing = _parse_env_file(target)
     existing[ENV_APP_TOKEN] = args.app_token
     existing[ENV_TABLE_ID] = args.table_id
+    if args.lark_profile:
+        existing[ENV_LARK_PROFILE] = args.lark_profile
     kept = [f"{k}={v}" for k, v in existing.items()]
     target.write_text("\n".join(kept) + "\n", encoding="utf-8")
     target.chmod(0o600)
     info(f"配置已写入 {target}")
+    if args.lark_profile:
+        info(f"台账固定使用 lark-cli profile：{args.lark_profile}（不再受 active profile 切换影响）")
+    else:
+        info(f"未写入 {ENV_LARK_PROFILE}：台账将沿用 lark-cli 当前 active profile，"
+             "别的任务切换 profile 后本 skill 会打到另一个租户。"
+             "要固定租户请带 --lark-profile <name> 重跑")
     info("提示：可用 agent-rule 检查/安装「缺配置兜底」规则到各 agent 的全局指令文件"
          "（安装前须把目标文件与规则全文给用户确认）")
 
@@ -759,9 +795,15 @@ def build_parser() -> argparse.ArgumentParser:
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="action", required=True)
 
+    def profile_flag(sp):
+        sp.add_argument("--lark-profile", dest="lark_profile",
+                        help=f"台账所在租户的 lark-cli profile 名（覆盖配置 {ENV_LARK_PROFILE}）；"
+                             "省略且未配置时沿用 lark-cli 当前 active profile")
+
     def common(sp, with_lookup: bool = False):
         sp.add_argument("--use-global-config", action="store_true",
                         help=f"启用第 4 层配置 {global_config_path()}（ADR 0003 要求显式 flag）")
+        profile_flag(sp)
         if with_lookup:
             sp.add_argument("--name", help="按人类别名定位记录")
             sp.add_argument("--id", action="append", help="按机器键 sec_xxx 定位记录，可重复")
@@ -818,15 +860,20 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("init-create", help="新建台账 Base（credentials 表 + 9 字段）")
     sp.add_argument("--base-name", default="凭证台账")
+    profile_flag(sp)
     sp.set_defaults(func=cmd_init_create)
 
     sp = sub.add_parser("init-adopt", help="接管用户自备表：校验字段，缺列补建，类型不符报错")
     sp.add_argument("--url", required=True)
+    profile_flag(sp)
     sp.set_defaults(func=cmd_init_adopt)
 
-    sp = sub.add_parser("config-write", help="写入 app_token/table_id 配置（默认全局，--project 写 $PWD/.env.local）")
+    sp = sub.add_parser("config-write",
+                        help="写入 app_token/table_id/lark_profile 配置（默认全局，--project 写 $PWD/.env.local）")
     sp.add_argument("--app-token", required=True)
     sp.add_argument("--table-id", required=True)
+    sp.add_argument("--lark-profile", dest="lark_profile",
+                    help=f"写入 {ENV_LARK_PROFILE}：台账所在租户的 lark-cli profile 名")
     sp.add_argument("--project", action="store_true")
     sp.set_defaults(func=cmd_config_write)
 

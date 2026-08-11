@@ -29,6 +29,8 @@
   key 失败，agent 会先查台账注入重试，用过一次即绑定、下次 `run --auto` 直用
 - 项目与凭证解耦：项目 `.env.local` 里只放指针（`SECRET_BOOK_IDS=sec_xxx`），
   真实凭证全在台账
+- 多租户不串号：`SECRET_BOOK_LARK_PROFILE` 把台账钉在指定的 lark-cli
+  profile 上，别的任务切走 active profile 也不影响本工具
 
 ## 快速开始
 
@@ -36,8 +38,10 @@
 
 ```bash
 # 1. 初始化（新建台账 Base，或用 init-adopt --url 接管已有表）
-python3 scripts/secret_book.py init-create
-python3 scripts/secret_book.py config-write --app-token <base_token> --table-id <table_id>
+#    lark-cli 有多个 profile 时，全程带 --lark-profile 指定台账落在哪个租户
+python3 scripts/secret_book.py init-create [--lark-profile <name>]
+python3 scripts/secret_book.py config-write --app-token <base_token> --table-id <table_id> \
+  [--lark-profile <name>]
 
 # 2. 保存一组凭证（payload 走 stdin，dotenv 格式）
 echo "GITHUB_TOKEN=ghp_xxx" | python3 scripts/secret_book.py save \
@@ -63,6 +67,37 @@ OSS 一套 AK/SK/Endpoint/Bucket 是一条四键记录，`run` 一次全量注�
 之后 `run --auto -- <命令>` 直接按 id 注入；绑定按 id 存储，凭证轮换、记录
 改名都不影响；记录删除时自动解除绑定。`bindings` 列出全部，`unbind` 解除。
 注入后仍鉴权失败时应先 `unbind` 再重新匹配，防止错误绑定反复注入。
+
+## 配置
+
+每个变量独立 first-found-wins：进程环境变量 → `$PWD/.env.local` → `$PWD/.env`
+→ `~/.config/secret-book/.env`（第 4 层仅在传 `--use-global-config` 时读）。
+
+| 变量 | 作用 |
+|---|---|
+| `SECRET_BOOK_APP_TOKEN` | 台账 Base 的 base token |
+| `SECRET_BOOK_TABLE_ID` | credentials 表的 table_id |
+| `SECRET_BOOK_IDS` | 项目绑定：`sec_xxx,sec_yyy`，该项目内 `run` 免指定记录 |
+| `SECRET_BOOK_LARK_PROFILE` | 台账所在租户的 lark-cli profile 名 |
+
+### 多 profile / 多租户
+
+`lark-cli` 的 active profile 是全局状态，别的任务随时可能切走它。台账表只存在
+于一个租户里，active 被切走后本工具会用另一个租户的身份查表，报
+`91403 you don't have permission`，`visible_to` 的比对基准（当前用户 open_id）
+也会跟着错。
+
+配了 `SECRET_BOOK_LARK_PROFILE=<name>` 后，脚本给每一次 lark-cli 调用追加
+`--profile <name>`（表读写、`auth status`、`+base-create`、`+url-resolve`），
+**不调 `lark-cli profile use`**，不产生全局副作用。未配置时不传 `--profile`，
+沿用 active profile。命令行 `--lark-profile <name>` 覆盖配置——`init-create` /
+`init-adopt` 跑在配置写入之前，指定建表落在哪个租户只能用它。
+
+```bash
+lark-cli profile list                                   # 看有哪些 profile
+python3 scripts/secret_book.py config-write \
+  --app-token <base_token> --table-id <table_id> --lark-profile <name>
+```
 
 ## 作为 Agent Skill 安装
 

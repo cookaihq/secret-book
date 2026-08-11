@@ -43,19 +43,45 @@ python3 "$SKILL_DIR/scripts/secret_book.py" <action> [flags]
 每个变量独立 first-found-wins：进程环境变量 → `$PWD/.env.local` → `$PWD/.env`
 → `~/.config/secret-book/.env`（第 4 层**仅在传 `--use-global-config` 时读**）。
 变量：`SECRET_BOOK_APP_TOKEN`（base token）、`SECRET_BOOK_TABLE_ID`、
-`SECRET_BOOK_IDS`（项目绑定）。
+`SECRET_BOOK_IDS`（项目绑定）、`SECRET_BOOK_LARK_PROFILE`（台账所在租户的
+lark-cli profile 名）。
 
 - 常规用法：项目无本地覆盖时，**始终显式带 `--use-global-config`**。
 - 项目要指向另一本台账：在项目 `.env.local` 写前两个变量即可覆盖全局。
 
+### SECRET_BOOK_LARK_PROFILE（台账绑定哪个 lark-cli profile）
+
+`lark-cli` 支持多 profile（`lark-cli profile list`），每个 profile 对应一个飞书
+应用 / 租户身份，**active profile 是全局状态，任何任务都可能把它切走**。台账表
+只存在于某一个租户里，active 被切走后本 skill 会拿另一个租户的身份查表，报
+`91403 you don't have permission`；`visible_to` 可见范围的比对基准（当前用户
+open_id）也会跟着错。
+
+- 配了 `SECRET_BOOK_LARK_PROFILE=<name>` 后，脚本给**每一次** lark-cli 调用
+  追加 `--profile <name>`——包括 `base` 表读写、`auth status`（open_id 判定）、
+  `+base-create`、`+url-resolve`。
+- **绝不调 `lark-cli profile use`**：那会改用户的全局 active profile。逐次传参
+  不产生任何全局副作用。
+- **未配置时行为不变**：不传 `--profile`，沿用 active profile。
+- 命令行 `--lark-profile <name>` 覆盖以上四层配置。`init-create` / `init-adopt`
+  在配置写入**之前**执行，指定建表 / 接管落在哪个租户只能靠这个 flag。
+- 写入配置：`config-write --lark-profile <name>`（与 `--app-token`
+  `--table-id` 同一条命令，默认写全局，`--project` 写 `$PWD/.env.local`）。
+- profile 名写错或该 profile 未登录时，脚本报错文案会带上 `（profile=xxx）`，
+  按提示跑 `lark-cli profile list` 核对。
+
 ## 初始化（首次使用）
 
-先问用户：新建台账表，还是接管已有表？
+先问用户：新建台账表，还是接管已有表？本机 lark-cli 有多个 profile 时（跑
+`lark-cli profile list` 看），**先问清台账要落在哪个 profile**，全程带
+`--lark-profile <name>`，最后写进配置。
 
-- 新建：`init-create [--base-name 凭证台账]` → 从输出提取 base token 与
-  credentials 表 table_id → **向用户口头确认后** `config-write --app-token X --table-id Y`
-- 接管：`init-adopt --url <多维表格URL>` → 脚本校验 9 字段（缺列自动补建，
-  类型不符会报错拒绝接管，不要绕过）→ 确认后同上 `config-write`
+- 新建：`init-create [--base-name 凭证台账] [--lark-profile <name>]` → 从输出
+  提取 base token 与 credentials 表 table_id → **向用户口头确认后**
+  `config-write --app-token X --table-id Y [--lark-profile <name>]`
+- 接管：`init-adopt --url <多维表格URL> [--lark-profile <name>]` → 脚本校验
+  9 字段（缺列自动补建，类型不符会报错拒绝接管，不要绕过）→ 确认后同上
+  `config-write`
 - `config-write` 默认写 `~/.config/secret-book/.env`；加 `--project` 写
   `$PWD/.env.local`（脚本会先验证该文件未被 git 跟踪且已被忽略）
 - 配置写完后，向用户介绍「缺配置兜底」规则并**展示目标文件清单与规则全文**，
