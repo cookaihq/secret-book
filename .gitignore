@@ -1,0 +1,4 @@
+# skill 自有运行时环境（ADR 0007 §1.3：venv 跟 skill 实体走，按 uv.lock 可重建）
+.venv/
+__pycache__/
+*.pyc

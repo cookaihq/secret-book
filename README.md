@@ -34,28 +34,42 @@
 
 ## 快速开始
 
-前置：[lark-cli](https://open.feishu.cn/) 已安装并完成登录；python3。
+前置：[lark-cli](https://open.feishu.cn/) 已安装并完成登录；
+[uv](https://docs.astral.sh/uv/) >= 0.8（脚本的 Python 环境由 uv 管理，首次运行
+自动在仓库里建 `.venv`）。
 
 ```bash
+# 0. 下面所有命令都从仓库根目录执行；uv run --project . 负责钉死解释器，
+#    不要改用裸 python3（会解析到系统解释器，见 ADR 0007）
+
 # 1. 初始化（新建台账 Base，或用 init-adopt --url 接管已有表）
 #    lark-cli 有多个 profile 时，全程带 --lark-profile 指定台账落在哪个租户
-python3 scripts/secret_book.py init-create [--lark-profile <name>]
-python3 scripts/secret_book.py config-write --app-token <base_token> --table-id <table_id> \
-  [--lark-profile <name>]
+uv run --project . scripts/secret_book.py init-create [--lark-profile <name>]
+uv run --project . scripts/secret_book.py config-write --app-token <base_token> \
+  --table-id <table_id> [--lark-profile <name>]
 
 # 2. 保存一组凭证（payload 走 stdin，dotenv 格式）
-echo "GITHUB_TOKEN=ghp_xxx" | python3 scripts/secret_book.py save \
+echo "GITHUB_TOKEN=ghp_xxx" | uv run --project . scripts/secret_book.py save \
   --name github-main --service github --purpose "主账号推送" --use-global-config
 
 # 3. 使用
-python3 scripts/secret_book.py run  --name github-main --use-global-config -- git push origin main
-python3 scripts/secret_book.py copy --name site-admin --key PASSWORD --use-global-config
-python3 scripts/secret_book.py list --use-global-config
+uv run --project . scripts/secret_book.py run  --name github-main --use-global-config -- git push origin main
+uv run --project . scripts/secret_book.py copy --name site-admin --key PASSWORD --use-global-config
+uv run --project . scripts/secret_book.py list --use-global-config
 
 # 4.（可选）安装缺配置兜底规则到各 agent 全局指令文件
-python3 scripts/secret_book.py agent-rule            # 先看检测与安装状态
-python3 scripts/secret_book.py agent-rule --install  # 确认后安装，--remove 可卸载
+uv run --project . scripts/secret_book.py agent-rule            # 先看检测与安装状态
+uv run --project . scripts/secret_book.py agent-rule --install  # 确认后安装，--remove 可卸载
 ```
+
+退出码：`0` 成功 · `1` 一般错误 · `3` `run --auto` 无绑定或绑定失效 ·
+`121` 写入结果不明（网络中断在写入过程中发生，本工具不盲重试）。遇到 `121` 先用
+`list` 核实记录是否已写入，再决定重试。
+
+`121` 取在「包装器自身错误」的惯例带（121–125，紧邻 shell 保留的 126/127/128+N）：
+`run` 会原样透传被包装命令的退出码，这个值必须高于被包装命令的常用取值
+（curl 文档化上限约 102），也要避开 `timeout` 的 124/125 与 `xargs` 的 123–125，
+否则调用方无从分辨这个码是台账写入给的还是子命令给的。
 
 记录 = **凭证组**：`secret` 列是 dotenv 格式键值对，单 token 是单键退化情形，
 OSS 一套 AK/SK/Endpoint/Bucket 是一条四键记录，`run` 一次全量注入。
@@ -95,7 +109,7 @@ OSS 一套 AK/SK/Endpoint/Bucket 是一条四键记录，`run` 一次全量注�
 
 ```bash
 lark-cli profile list                                   # 看有哪些 profile
-python3 scripts/secret_book.py config-write \
+uv run --project . scripts/secret_book.py config-write \
   --app-token <base_token> --table-id <table_id> --lark-profile <name>
 ```
 

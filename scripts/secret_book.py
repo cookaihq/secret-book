@@ -16,15 +16,111 @@ docs/deliverables/secret-book/agent-rule-and-bindings.md。
 
 from __future__ import annotations
 
+# ---------- 运行时环境 bootstrap（ADR 0007 §1.4）----------
+# 作用：把「用哪个解释器跑」从调用方每轮的记忆变成结构性事实——不在
+# <仓根>/.venv 里就 os.execv 拉回去，venv 缺失就按 uv.lock 自动重建。
+# **只用 Python 3.9 兼容语法与标准库**：本段会先被系统 python3（本机 3.9.6）
+# 执行，用了新语法会在 SyntaxError 阶段就死掉，兜底反而成了故障点。
+
+import os
+import shlex
+import subprocess
+import sys
+
+# 一次性再入护栏：exec 之后仍不在目标 venv，说明 venv 目录本身坏了。没有这个
+# 标记会无限 execv 且零输出。标记值存的是**本轮目标 venv 的 realpath**，不是
+# 布尔——变量被外部环境 export 时值不匹配就不算本轮再入，仍照常自动重建。
+_BOOTSTRAP_REEXEC_ENV = "SECRET_BOOK_BOOTSTRAP_REEXEC"
+
+# 本脚本在 <仓根>/scripts/ 下，项目根（pyproject.toml 所在）是上一级。
+_SKILL_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# 重定位只认 uv 原生的 UV_PROJECT_ENVIRONMENT，且基准必须是**项目根**——uv 0.8
+# 就是这么解析相对值的；按 CWD 解析会在用户项目目录里设了相对值时把进程 exec
+# 进用户项目的 venv。绝对值不受影响：os.path.join 遇到绝对路径直接返回它。
+_VENV_DIR = os.path.join(_SKILL_DIR, os.environ.get("UV_PROJECT_ENVIRONMENT") or ".venv")
+_VENV_PY = os.path.join(_VENV_DIR, "bin", "python")
+
+
+def _bootstrap_fail(msg):
+    sys.stderr.write(msg + "\n")
+    raise SystemExit(1)
+
+
+def _bootstrap_manual_hint():
+    # 必须 shell 引用：路径含空格时，未引用的 `rm -rf /tmp/sp ace/.venv` 被照抄
+    # 执行会删掉两个无关路径。
+    # --no-dev：重建的是**运行**环境，不该拉进测试依赖（ADR 0007 §1.2 补充 2）。
+    # 本 skill 的 pyproject 目前没有 dependency-groups，写法仍与工作区统一——
+    # 将来加了 dev 组不必再回头改这里，也不会有人照抄成"重建顺带装 pytest"。
+    return "rm -rf %s && uv sync --project %s --no-dev" % (
+        shlex.quote(_VENV_DIR), shlex.quote(_SKILL_DIR)
+    )
+
+
+def _bootstrap_venv_is_valid():
+    # 只判 bin/python 存在是不够的：sync 中断、手工同名目录、残留软链都会让
+    # 解释器存在而目录不是 venv，此时跳过修复直接 execv 就会无限重启。
+    return (os.path.exists(_VENV_PY)
+            and os.path.exists(os.path.join(_VENV_DIR, "pyvenv.cfg")))
+
+
+def _bootstrap_require_uv():
+    """uv 是系统级程序，缺失/版本过低只报错给命令，不擅自安装（ADR 0007 §4.2）。"""
+    try:
+        probe = subprocess.run(["uv", "--version"], stdout=subprocess.PIPE,
+                               stderr=subprocess.STDOUT, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        _bootstrap_fail("uv 未安装。请执行：curl -LsSf https://astral.sh/uv/install.sh | sh")
+    parts = probe.stdout.decode("utf-8", "replace").split()  # 形如 "uv 0.8.11 (...)"
+    found = parts[1] if len(parts) > 1 else "0"
+    try:
+        numeric = tuple(int(x) for x in (found.split(".") + ["0", "0"])[:2])
+    except ValueError:
+        numeric = (0, 0)  # uv 报错时 stdout 是 "error: ..."，硬 int() 会抛未捕获异常
+    if numeric < (0, 8):
+        _bootstrap_fail("uv 版本过低（需 >= 0.8，当前 %s）。请执行：uv self update" % found)
+
+
+def _bootstrap_ensure():
+    target = os.path.realpath(_VENV_DIR)
+    if os.path.realpath(sys.prefix) == target:
+        # 已到位：清掉本轮标记，别让 run 派生的子进程继承后误判。
+        if os.environ.get(_BOOTSTRAP_REEXEC_ENV) == target:
+            os.environ.pop(_BOOTSTRAP_REEXEC_ENV, None)
+        return
+    if os.environ.get(_BOOTSTRAP_REEXEC_ENV) == target:  # 只认「值等于本轮目标」
+        _bootstrap_fail("运行环境异常：已重启到 %s 但解释器仍不在该 venv 内，目录疑似损坏。\n"
+                        "请手工重建：%s" % (_VENV_DIR, _bootstrap_manual_hint()))
+    if not _bootstrap_venv_is_valid():
+        _bootstrap_require_uv()
+        sys.stderr.write("[bootstrap] 运行环境缺失，正在按 uv.lock 重建 %s ...\n" % _VENV_DIR)
+        try:
+            sync = subprocess.run(["uv", "sync", "--project", _SKILL_DIR, "--no-dev"],
+                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                  timeout=600)  # 网络调用必设总预算（ADR 0006）
+        except subprocess.TimeoutExpired:
+            _bootstrap_fail("uv sync 超过 600 秒未完成，疑似网络异常。请手工执行："
+                            + _bootstrap_manual_hint())
+        if sync.returncode != 0 or not _bootstrap_venv_is_valid():
+            _bootstrap_fail("uv sync 失败，无法重建运行环境（请手工执行：%s）：\n%s"
+                            % (_bootstrap_manual_hint(),
+                               sync.stdout.decode("utf-8", "replace")))
+    os.environ[_BOOTSTRAP_REEXEC_ENV] = target  # putenv，execv 后的进程读得到
+    os.execv(_VENV_PY, [_VENV_PY] + sys.argv)   # 拉回目标解释器重启自身
+
+
+_bootstrap_ensure()
+
+# ---------- bootstrap 结束，以下为业务代码 ----------
+
 import argparse
 import datetime
 import json
-import os
 import re
 import secrets
 import string
-import subprocess
-import sys
+import time
 from pathlib import Path
 
 SKILL_NAME = "secret-book"
@@ -59,6 +155,11 @@ def die(msg: str, code: int = 1) -> "NoReturn":  # noqa: F821
 def info(msg: str) -> None:
     # flush：run 动作随后 execvpe 替换进程，不 flush 会丢缓冲中的输出
     print(f"[{SKILL_NAME}] {_scrub(msg)}", flush=True)
+
+
+def warn(msg: str) -> None:
+    """诊断信息走 stderr，不污染 list/get 的 stdout 数据流。"""
+    print(f"[{SKILL_NAME}] {_scrub(msg)}", file=sys.stderr, flush=True)
 
 
 def _scrub(text: str) -> str:
@@ -171,6 +272,126 @@ def parse_payload(text: str) -> dict:
     return pairs
 
 
+# ---------- lark-cli 调用与网络抖动处理（ADR 0006）----------
+# 本 skill 的每一条业务命令都经 lark-cli 打飞书开放平台，属网络请求路径。
+#
+# lark-cli 1.0.82 实测（2026-08-18）：`--format json` 下**失败信封写 stderr**、
+# 成功输出写 stdout；网络类失败信封形如
+#   {"ok": false, "error": {"type": "network", "subtype": "transport",
+#    "message": "API call failed: Get \"https://open.feishu.cn/...\": ...
+#                dial tcp ...: connect: connection refused"}}
+# 退出码 4；profile 不存在这类配置错误 type=config、退出码 3；参数错误退出码 2。
+# 因此分类优先读信封的 error.type（结构化），无信封时才退到关键词匹配。
+
+LARK_READ_TIMEOUT = 60    # 查询类：+record-list / +field-list / auth status / +url-resolve
+LARK_WRITE_TIMEOUT = 120  # 写入类：+record-batch-* / +field-create / +base-create（建 Base 连带建表，最慢）
+LARK_MAX_ATTEMPTS = 3     # ADR 0006 规则 3：总尝试 3 次（首次 + 2 次重试），退避 2^n 秒
+
+# 写操作结果不明（ADR 0006 规则 4）：调用方须先核实再决定是否重试。
+#
+# 取值必须避开**被包装命令**的常用退出码。本 skill 的 `run` 会原样透传子命令的
+# 退出码（`sys.exit(proc.returncode)` / `execvpe`），而 `run --name <别名>` 在
+# 启动子命令**之前**还会经 resolve_records → backfill_ids 打一次写请求（给手工
+# 粘贴进表格的行补 id），那次写超时就以本码退出。也就是说同一个数字有两种来源，
+# 值一旦落在子命令的常用区间就不可区分——原值 4 正好撞上 curl 的 4（功能未编入
+# libcurl），调用方无从判断是"台账写入结果不明"还是"curl 缺特性"。
+#
+# 选 121 的依据（不是随手挑一个大数）：
+# - 121–125 是"包装器自身错误"的既有惯例带，紧邻 shell 保留的 126（找到但不可
+#   执行）/ 127（找不到）/ 128+N（被信号杀死）。GNU timeout 用 124/125、
+#   xargs 用 123–125，都落在这一带。
+# - 121 高于常见被包装命令的取值上限：curl 文档化的最大退出码约 102，git、
+#   rsync、ffmpeg 等更低；同时避开 timeout 与 xargs 已占的 123–125。
+# - 不用 64–78（BSD sysexits.h 有各自既定语义，78=EX_CONFIG 是"配置有误"，
+#   与"写入结果不明"不是一回事）。
+EXIT_AMBIGUOUS = 121
+
+# 读 = 幂等查询，瞬时故障可安全重试。
+LARK_READ_SHORTCUTS = frozenset({"+record-list", "+field-list"})
+# 写 = 会改台账表结构或内容。飞书 Base 这几个接口没有幂等键，本 skill 也没有
+# 「先查后写」的对账通道，所以超时/连接中断后结果不明，一律不盲重试（规则 4）。
+LARK_WRITE_SHORTCUTS = frozenset({"+record-batch-create", "+record-batch-update",
+                                  "+field-create"})
+
+# 无 JSON 信封时的兜底判据（参考 local-skills/deliver-files 的 TRANSIENT_HINTS）
+TRANSIENT_HINTS = ("timeout", "timed out", "i/o timeout", "connection reset",
+                   "connection refused", "broken pipe", "no such host", "dns",
+                   "tls handshake", "eof", "temporarily unavailable",
+                   "network is unreachable", "no route to host")
+
+
+def _extract_envelope(text: str) -> dict | None:
+    """从 lark-cli 输出里取出 JSON 信封。
+
+    用 raw_decode 而不是 json.loads：信封前后都可能有非 JSON 的进度行 / 提示行，
+    整段 loads 会因为尾部残留而失败。
+    """
+    decoder = json.JSONDecoder()
+    idx = text.find("{")
+    while idx >= 0:
+        try:
+            obj, _ = decoder.raw_decode(text[idx:])
+        except json.JSONDecodeError:
+            obj = None
+        if isinstance(obj, dict) and "ok" in obj:
+            return obj
+        idx = text.find("{", idx + 1)
+    return None
+
+
+def _transient_reason(proc, what: str) -> str | None:
+    """瞬时故障返回原因文本；确定性失败（鉴权、参数、业务报错）返回 None。"""
+    envelope = _extract_envelope(proc.stderr or "") or _extract_envelope(proc.stdout or "")
+    err = (envelope or {}).get("error") or {}
+    message = " ".join(str(err.get("message") or "").split())
+    if err.get("type") == "network":
+        return f"lark-cli {what} 网络失败：{message[:300]}"
+    if envelope is not None:
+        return None  # 有结构化分类且不是 network：确定性失败，重试必然同样失败
+    tail = " ".join((proc.stderr or proc.stdout or "").split())[:300]
+    if any(h in tail.lower() for h in TRANSIENT_HINTS):
+        return f"lark-cli {what} 疑似网络失败：{tail}"
+    return None
+
+
+def _lark_exec(cmd: list, kind: str, what: str) -> subprocess.CompletedProcess:
+    """执行一次 lark-cli，按 ADR 0006 处理瞬时故障。
+
+    kind="read"：瞬时故障重试至多 LARK_MAX_ATTEMPTS 次，指数退避 2^n 秒。
+    kind="write"：瞬时故障不重试，直接以 EXIT_AMBIGUOUS 终止（结果不明）。
+    确定性失败原样返回 CompletedProcess，由调用方按既有逻辑 die()。
+    """
+    if kind not in ("read", "write"):
+        die(f"内部错误：未知的 lark-cli 调用类型 {kind}")
+    timeout = LARK_READ_TIMEOUT if kind == "read" else LARK_WRITE_TIMEOUT
+    for attempt in range(LARK_MAX_ATTEMPTS):
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        except FileNotFoundError:
+            # 确定性失败：二进制不在 PATH，重试必然同样失败
+            die("lark-cli 未安装或不在 PATH 中。请先安装 lark-cli 并完成 user 身份登录")
+        except subprocess.TimeoutExpired:
+            reason = f"lark-cli {what} 超过 {timeout}s 未返回"
+        except OSError as exc:  # 进程起不来（fork 失败、资源暂时不足等），算瞬时
+            reason = f"无法启动 lark-cli 进程：{exc}"
+        else:
+            if proc.returncode == 0:
+                return proc
+            reason = _transient_reason(proc, what)
+            if reason is None:
+                return proc  # 确定性失败，交回调用方
+        if kind == "write":
+            die(f"{reason}。写入结果不明（ambiguous）：该请求可能已经送达飞书、也可能没有，"
+                "本 skill 不做盲重试（重发会造出重复记录/重复字段）。"
+                "请先用 list 核实是否已写入，再决定要不要重试。", EXIT_AMBIGUOUS)
+        if attempt == LARK_MAX_ATTEMPTS - 1:
+            die(f"{reason}（已尝试 {LARK_MAX_ATTEMPTS} 次仍失败）")
+        wait = 2 ** attempt  # 1s、2s
+        warn(f"{reason}；{wait}s 后重试（第 {attempt + 2}/{LARK_MAX_ATTEMPTS} 次尝试）")
+        time.sleep(wait)
+    die("内部错误：lark-cli 重试循环未正常退出")  # 不可达，仅为控制流完整
+
+
 # ---------- 后端适配器 ----------
 
 class FeishuBackend:
@@ -194,8 +415,8 @@ class FeishuBackend:
         """当前 lark-cli user 身份的 open_id，visible_to 过滤的比对基准。
         取不到时 die（fail-closed）：不能确定「我是谁」就不放行受限记录。"""
         if self.profile not in FeishuBackend._open_id_cache:
-            proc = subprocess.run(["lark-cli", "auth", "status", *self._profile_args()],
-                                  capture_output=True, text=True)
+            proc = _lark_exec(["lark-cli", "auth", "status", *self._profile_args()],
+                              "read", "auth status")
             open_id = ""
             try:
                 open_id = json.loads(proc.stdout)["identities"]["user"]["openId"]
@@ -208,11 +429,19 @@ class FeishuBackend:
             FeishuBackend._open_id_cache[self.profile] = open_id
         return FeishuBackend._open_id_cache[self.profile]
 
-    def _run(self, shortcut: str, extra: list, risk_write: bool = False) -> dict:
+    def _run(self, shortcut: str, extra: list) -> dict:
+        # 读 / 写归类是重试策略的唯一依据（ADR 0006 规则 4），未归类的子命令
+        # 直接报错：默认按读重试有可能把一次写操作盲重放成两条记录。
+        if shortcut in LARK_WRITE_SHORTCUTS:
+            kind = "write"
+        elif shortcut in LARK_READ_SHORTCUTS:
+            kind = "read"
+        else:
+            die(f"内部错误：lark-cli 子命令 {shortcut} 未在读/写集合中归类")
         cmd = ["lark-cli", "base", shortcut, "--as", "user", "--format", "json",
                *self._profile_args(),
                "--base-token", self.app_token, "--table-id", self.table_id, *extra]
-        proc = subprocess.run(cmd, capture_output=True, text=True)
+        proc = _lark_exec(cmd, kind, shortcut)
         if proc.returncode != 0:
             die(f"lark-cli {shortcut} 失败 (exit {proc.returncode}){self._profile_note()}: "
                 f"{proc.stderr.strip()[:500]}")
@@ -290,11 +519,11 @@ class FeishuBackend:
 
     def create_record(self, fields: dict) -> None:
         body = json.dumps({"create_records": [fields]}, ensure_ascii=False)
-        self._run("+record-batch-create", ["--json", body], risk_write=True)
+        self._run("+record-batch-create", ["--json", body])
 
     def update_record(self, record_id: str, fields: dict) -> None:
         body = json.dumps({"update_records": {record_id: fields}}, ensure_ascii=False)
-        self._run("+record-batch-update", ["--json", body], risk_write=True)
+        self._run("+record-batch-update", ["--json", body])
 
 
 def _fmt_expires(raw) -> str:
@@ -591,7 +820,8 @@ def cmd_init_create(args) -> None:
            *profile_args,
            "--name", args.base_name, "--table-name", "credentials",
            "--fields", json.dumps(FIELD_SCHEMA, ensure_ascii=False)]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    # 建 Base 是写操作：超时后可能已经建出一个 Base，重发会造出第二个（规则 4）
+    proc = _lark_exec(cmd, "write", "+base-create")
     if proc.returncode != 0:
         die(f"+base-create 失败 (exit {proc.returncode}): {proc.stderr.strip()[:500]}")
     print(proc.stdout)
@@ -603,9 +833,9 @@ def cmd_init_create(args) -> None:
 def cmd_init_adopt(args) -> None:
     profile = resolve_profile(args)
     profile_args = ["--profile", profile] if profile else []
-    proc = subprocess.run(["lark-cli", "base", "+url-resolve", "--as", "user",
-                           "--format", "json", *profile_args, "--url", args.url],
-                          capture_output=True, text=True)
+    proc = _lark_exec(["lark-cli", "base", "+url-resolve", "--as", "user",
+                       "--format", "json", *profile_args, "--url", args.url],
+                      "read", "+url-resolve")
     if proc.returncode != 0:
         die(f"+url-resolve 失败 (exit {proc.returncode}): {proc.stderr.strip()[:500]}")
     data = json.loads(proc.stdout)
@@ -622,7 +852,7 @@ def cmd_init_adopt(args) -> None:
     for spec in FIELD_SCHEMA:
         name, want = spec["name"], spec["type"]
         if name not in existing:
-            backend._run("+field-create", ["--json", json.dumps(spec, ensure_ascii=False)], risk_write=True)
+            backend._run("+field-create", ["--json", json.dumps(spec, ensure_ascii=False)])
             info(f"已补建缺失字段 {name} ({want})")
         elif str(existing[name]) not in (want, ""):
             die(f"字段 {name} 类型不符：表内为 {existing[name]}，需要 {want}。拒绝接管脏表（design.md §5），请修正后重试")
@@ -675,7 +905,9 @@ def _assert_untracked_ignored(target: Path) -> None:
 
 # ---------- agent-rule（多 Agent 全局指令文件的兜底规则块）----------
 
-RULE_VERSION = 1
+# v2（2026-08-18）：命令改为 `uv run --project`，裸 python3 会用错解释器（ADR 0007）。
+# 递增版本号是必须的——不递增的话已安装 v1 的文件会被判成「手工改动」而跳过更新。
+RULE_VERSION = 2
 RULE_BEGIN = re.compile(r"<!-- secret-book:fallback-rule v(\d+) -->")
 RULE_END = "<!-- /secret-book:fallback-rule -->"
 
@@ -702,13 +934,32 @@ AGENT_TARGETS = [
 WINDSURF_CHAR_LIMIT = 6000  # global_rules.md 官方字符上限
 
 
+def _is_inside_worktree(path: str) -> bool:
+    """路径是否落在 `<repo>/.worktrees/<name>/` 这类临时检出里。
+
+    判据只看路径分量里有没有 `.worktrees`——这是本工作区 worktree 的固定落点
+    （见工作区 CLAUDE.md「Worktree 创建已由 WorktreeCreate hook 接管」）。粗，
+    但足够：装规则是低频的一次性动作，宁可在极少数同名目录上多问一句，也不能
+    把随时会被删除的路径写进各 agent 的**全局**指令文件。
+    """
+    return ".worktrees" in os.path.realpath(path).split(os.sep)
+
+
 def rule_block() -> str:
+    # realpath：入口通常是 ~/.claude/skills/secret-book 这类 symlink，解析到实体
+    # 才是各 agent 长期可用的稳定路径。
     script = os.path.realpath(__file__)
+    project = os.path.dirname(os.path.dirname(script))  # pyproject.toml 所在目录
+    # shlex.quote：路径含空格或 shell 元字符时，规则块里的命令会被 agent 原样
+    # 复制执行，未引用的 `--project /Users/me/My Skills/secret-book` 会被切成两个
+    # 参数（与 bootstrap 的 _bootstrap_manual_hint 同一条理由）。安全路径下
+    # quote 原样返回，已装好的规则块文本不受影响，因此不需要 bump RULE_VERSION。
+    run = f"uv run --project {shlex.quote(project)} {shlex.quote(script)}"
     return f"""<!-- secret-book:fallback-rule v{RULE_VERSION} -->
 ## secret-book 凭证兜底
 命令或 skill 因缺少凭证/API key/token 配置而失败时：
-1. 先试 `python3 {script} run --auto --use-global-config -- <原命令>`；命中绑定即注入重试，退出码 3 = 无绑定。
-2. 无绑定则 `python3 {script} list --use-global-config` 查元数据按意图匹配：唯一命中 → `run --id <id> --bind --use-global-config -- <原命令>`（成功自动记住绑定）；多条候选或无命中 → 列给用户选择，禁止自选。
+1. 先试 `{run} run --auto --use-global-config -- <原命令>`；命中绑定即注入重试，退出码 3 = 无绑定。
+2. 无绑定则 `{run} list --use-global-config` 查元数据按意图匹配：唯一命中 → `run --id <id> --bind --use-global-config -- <原命令>`（成功自动记住绑定）；多条候选或无命中 → 列给用户选择，禁止自选。
 3. 注入后仍鉴权失败 → `unbind --command <命令名>` 解除绑定后重新匹配，禁止重试同一绑定。
 4. MCP server 缺配置无法注入已运行进程：用 `copy` 取值引导用户配置后重启会话。凭证值一律不上屏。
 {RULE_END}"""
@@ -734,6 +985,18 @@ def cmd_agent_rule(args) -> None:
     if only - known:
         die(f"未知 agent key：{', '.join(sorted(only - known))}（可用：{', '.join(sorted(known))}）")
     action = "install" if args.install else ("remove" if args.remove else "check")
+    # 规则块里写的是本脚本的绝对路径，会被装进各 agent 的**全局**指令文件、长期
+    # 生效。从 worktree 里装，写进去的就是一条 worktree 删除后即失效的路径——
+    # 症状是"以后每次缺凭证兜底都报文件不存在"，且发生在别的会话里，没人会联想
+    # 到当初是在哪装的。因此安装一律拒绝，让用户回主检出执行；check / remove 不
+    # 写路径，只提醒（check 还会因路径不同把已装的块误报成 modified）。
+    if _is_inside_worktree(__file__):
+        hint = ("当前脚本在 worktree 检出内运行"
+                f"（{os.path.realpath(__file__)}）。规则块会把这个路径写进各 agent "
+                "的全局指令文件，worktree 一删就永久失效。")
+        if action == "install":
+            die(hint + "请到主检出（非 .worktrees/ 下）再执行 agent-rule --install")
+        warn(hint + "下方状态仅供参考：路径不同会把已装好的规则块显示成 modified")
     for key, label, detect, target, mode in AGENT_TARGETS:
         if only and key not in only:
             continue

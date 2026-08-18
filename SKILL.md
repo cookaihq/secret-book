@@ -1,8 +1,8 @@
 ---
 name: secret-book
-version: 1.0.0
+version: 1.1.0
 description: >-
-  v1.0.0｜凭证台账：把 token、API key、账号密码、OSS/数据库等配置组登记在用户自己的
+  v1.1.0｜凭证台账：把 token、API key、账号密码、OSS/数据库等配置组登记在用户自己的
   飞书多维表格里，agent 按意图或精确 ID 查询取用，取用输出一律掩码。当用户说
   "存一下这个 token/API key/密钥/凭证"、"用我存的 xx 推送/登录/调用"、"我的
   OSS/数据库配置"、"凭证台账/密钥台账/secret book"，或任何命令、skill、工具
@@ -13,7 +13,7 @@ description: >-
   another skill or command fails due to missing credentials. Requires lark-cli
   logged in. Do NOT use for encrypted vault needs — this skill stores
   plaintext; point users to a real password manager for high-value secrets.
-compatibility: 需要已安装并登录 lark-cli（user 身份）、python3、可访问飞书开放平台的网络；Claude Code 与 Codex 双端可用
+compatibility: 需要已安装并登录 lark-cli（user 身份）、uv >= 0.8（脚本运行时由 uv 管理，首次运行自动建 .venv）、可访问飞书开放平台的网络；Claude Code 与 Codex 双端可用
 ---
 
 # secret-book
@@ -37,11 +37,16 @@ compatibility: 需要已安装并登录 lark-cli（user 身份）、python3、�
 ## 前置依赖
 
 `lark-cli` 已安装并完成 user 身份登录（缺失时引导用户走 lark 系 skill 的
-安装/登录流程，本 skill 不重造门禁）。脚本统一入口：
+安装/登录流程，本 skill 不重造门禁）；`uv >= 0.8`（ADR 0007：脚本的解释器由
+uv 钉死，`$SKILL_DIR/.venv` 缺失时首次运行按 `uv.lock` 自动重建）。脚本统一
+入口：
 
 ```bash
-python3 "$SKILL_DIR/scripts/secret_book.py" <action> [flags]
+uv run --project "$SKILL_DIR" "$SKILL_DIR/scripts/secret_book.py" <action> [flags]
 ```
+
+**禁止裸 `python3` 调用**：那会按 PATH 解析到系统解释器。脚本顶部有 bootstrap
+兜底（不在目标 venv 就 `os.execv` 拉回去），但示例仍一律写 `uv run --project`。
 
 ## 配置（ADR 0003 分层）
 
@@ -110,6 +115,30 @@ open_id）也会跟着错。
 payload 规则：值 = 首个 `=` 之后的原文（不去引号、不转义）、必须单行；
 多行 blob（SSH 私钥、证书）请用户先 base64 成一行存入，用时自行解码。
 
+### 网络抖动与退出码（ADR 0006）
+
+每次 lark-cli 调用都设超时（查询 60s、写入 120s）并先给错误分类：
+
+- **查询类**（`list` / `get` / `run` / `copy` / `init-adopt` 的读表与
+  `auth status`）遇到网络类失败自动重试，总尝试 3 次、退避 1s / 2s，每次重试
+  在 stderr 打一行原因（凭证照常掩码）。
+- **写入类**（`save` 建记录、id 回填的更新、`init-adopt` 补建字段、
+  `init-create` 建 Base）**不重试**：飞书这几个接口没有幂等键，重发会造出重复
+  记录或重复字段。超时 / 连接中断后以**退出码 121** 结束并说明「写入结果不明」。
+- 确定性失败（profile 不存在、鉴权失败、参数错误、字段类型不符）立即报错退出，
+  不消耗重试。
+
+退出码：`0` 成功 · `1` 一般错误 · `3` `run --auto` 无绑定/绑定失效 ·
+`121` 写入结果不明。**遇到 121 不要重跑命令**——先 `list`（或 `get --name`）核实
+记录是否已经写进去，再决定重试还是收手。
+
+`121` 不是随手取的大数：`run` 会**原样透传被包装命令的退出码**，而
+`run --name <别名>` 在启动子命令之前还可能因 id 回填写入超时而以本码退出，
+同一个数字两种来源。121 落在「包装器自身错误」的惯例带（121–125，紧邻 shell
+保留的 126/127/128+N），高于 curl（文档化上限约 102）、git、rsync 等被包装命令
+的取值范围，也避开 GNU `timeout` 的 124/125 与 `xargs` 的 123–125。
+（原值 `4` 与 curl 的 4「功能未编入 libcurl」直接相撞，已于 2026-08-18 改。）
+
 ### 可见范围（visible_to）
 
 表内人员字段 `visible_to` 控制记录级可见性：**为空 = 不受限；非空 = 仅名单内
@@ -157,6 +186,8 @@ Windsurf、Cline、Copilot CLI、Goose；完整矩阵见脚本 `AGENT_TARGETS`�
 
 - **安装前必须取得用户确认**：列出将写入的目标文件与规则全文，用户同意后
   再执行。改用户的全局指令文件是侵入操作，禁止静默安装。
+- 规则块当前版本 **v2**（命令由裸 `python3` 改成 `uv run --project`）。装过 v1
+  的机器跑一次 `agent-rule --install` 即原地升级，不需要 `--force`。
 - 幂等：重复 install 跳过已是最新的；规则升级时原地替换旧版本块；
   检测到用户手工改过规则块时跳过，需 `--force` 才覆盖。
 - Cursor 无全局指令文件（User Rules 存 IDE 设置内），`--install` 时会打印
