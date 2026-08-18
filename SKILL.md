@@ -1,7 +1,8 @@
 ---
 name: secret-book
+version: 1.0.0
 description: >-
-  凭证台账：把 token、API key、账号密码、OSS/数据库等配置组登记在用户自己的
+  v1.0.0｜凭证台账：把 token、API key、账号密码、OSS/数据库等配置组登记在用户自己的
   飞书多维表格里，agent 按意图或精确 ID 查询取用，取用输出一律掩码。当用户说
   "存一下这个 token/API key/密钥/凭证"、"用我存的 xx 推送/登录/调用"、"我的
   OSS/数据库配置"、"凭证台账/密钥台账/secret book"，或任何命令、skill、工具
