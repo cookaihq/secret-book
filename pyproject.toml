@@ -9,10 +9,13 @@
 # lark-cli 是系统级外部程序，不由 uv 管理（缺失时脚本报错给安装指引）。
 [project]
 name = "secret-book"
-version = "1.2.0"
-description = "凭证台账 CLI（飞书多维表格后端）的运行时环境锁定"
+version = "2.0.0"
+description = "令牌管理 CLI（飞书多维表格后端）的运行时环境锁定"
 requires-python = ">=3.9"
 dependencies = []
+
+[dependency-groups]
+dev = ["pytest>=8,<9"]
 
 [tool.uv]
 # 脚本直接运行，不作为可安装包构建。

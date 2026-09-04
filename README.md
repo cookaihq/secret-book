@@ -1,141 +1,293 @@
 # secret-book
 
-**凭证台账 + agent 取用通道**：把 token、API key、账号密码、OSS/数据库配置组
-登记在你自己的飞书多维表格里；Claude Code / Codex 等 agent 通过本 skill 按
-意图或精确 ID 查询取用，取用输出一律掩码。用过一次的凭证会按
-（项目, 命令）自动记住，下次缺配置时直接按 id 注入重试。
+**飞书令牌表 + agent 取用通道**：把 token、API key、账号密码、OSS/数据库连接参数
+保存到你自己的飞书多维表格。Claude Code、Codex 等 agent 可以按用途或精确 ID
+查找令牌，把值注入子进程或送入剪贴板，值不会显示在终端输出中。
+
+本机可以保存多套有名称的令牌配置，例如“工作”“个人”。任何时刻只有一套
+当前配置；你可以直接在对话中说“切换到工作配置”，agent 会核对名称并持久切换。
 
 > 本仓库原名 `cred-ledger`，2026-08-10 更名为 `secret-book`。
 
-## ⚠️ 请先读这一段
+## 使用前请确认
 
-- **明文存储，不加密。这不是密码管理器的替代品。**
-- 安全边界 = 你的飞书表格权限：平台方与任何有表格权限的人可见；多维表格
-  保留 180 天历史记录，删除另有 30 天回收站。
-- 只建议存**可随时轮换的中低价值凭证**，并把台账表权限收紧到仅本人。
-- 高价值凭证请使用 1Password 等专业密码管理器（其端到端加密架构严格强于
-  本工具）。secret-book 的定位是：数据在你自己的租户里、飞书生态零新增
-  账号、agent 原生取用、免费。
+- **令牌以明文保存在飞书多维表格中，不加密。这不是密码管理器。**
+- 安全边界由你的飞书租户和令牌表权限决定。平台方与任何有表格权限的人都能看到
+  数据；飞书多维表格保留 180 天历史记录，删除后另有 30 天回收站。
+- 这里只适合保存可随时轮换的中低价值令牌，并应把令牌表权限收紧到仅本人。
+  高价值令牌应使用 1Password 等专业密码管理器。
+- secret-book 的目标是让数据留在你自己的飞书租户，同时减少 agent 反复向你索要
+  token 的过程；它不提供端到端加密。
 
-## 它解决什么
+## 核心概念
 
-- 凭证散在各处：一张多维表格当**台账**——名称、归属、用途、到期日一目了然，
-  到期提醒用多维表格原生自动化即可配置
-- agent 要用凭证时反复问你要：`run` 把凭证注入子进程环境执行命令、`copy`
-  把值送进剪贴板——**值不上屏、不进会话记录**
-- 缺配置自动兜底：`agent-rule --install` 把兜底规则写进各主流 agent
-  （Claude Code / Codex / Gemini CLI / OpenCode / Qwen Code / iFlow / Amp /
-  Windsurf / Cline / Copilot CLI / Goose）的全局指令文件；此后任何命令因缺
-  key 失败，agent 会先查台账注入重试，用过一次即绑定、下次 `run --auto` 直用
-- 项目与凭证解耦：项目 `.env.local` 里只放指针（`SECRET_BOOK_IDS=sec_xxx`），
-  真实凭证全在台账
-- 多租户不串号：`SECRET_BOOK_LARK_PROFILE` 把台账钉在指定的 lark-cli
-  profile 上，别的任务切走 active profile 也不影响本工具
+- **令牌表**：一张飞书多维表格，保存多条令牌记录。
+- **令牌记录**：表中的一行，可以包含一个 token，也可以包含一组需要同时使用的
+  dotenv 键值，例如 OSS 的 AK、SK、Endpoint 和 Bucket。
+- **令牌配置**：本机访问一张令牌表所需的 `app_token`、`table_id`、lark-cli
+  profile 和固定身份。全局可保存多套。
+- **当前配置**：全局多套令牌配置中唯一被选中的一套。业务命令带
+  `--use-global-config` 时使用它。
+
+每套令牌配置只对应一张令牌表和一个经过确认的飞书身份。切换配置不会修改
+lark-cli 的 active profile；每次访问都显式传入该配置自己的 profile。
 
 ## 快速开始
 
-前置：[lark-cli](https://open.feishu.cn/) 已安装并完成登录；
-[uv](https://docs.astral.sh/uv/) >= 0.8（脚本的 Python 环境由 uv 管理，首次运行
-自动在仓库里建 `.venv`）。
+前置条件：macOS 或 Linux，已安装并登录 [lark-cli](https://open.feishu.cn/)，并安装
+[uv](https://docs.astral.sh/uv/) >= 0.8。当前运行时路径和文件锁依赖 POSIX API，
+不支持 Windows。以下命令都在仓库根目录执行。
+
+### 1. 创建第一套配置
+
+查看本机已有的 lark-cli profile：
 
 ```bash
-# 0. 下面所有命令都从仓库根目录执行；uv run --project . 负责钉死解释器，
-#    不要改用裸 python3（会解析到系统解释器，见 ADR 0007）
-
-# 1. 初始化（新建台账 Base，或用 init-adopt --url 接管已有表）
-#    lark-cli 有多个 profile 时，全程带 --lark-profile 指定台账落在哪个租户
-uv run --project . scripts/secret_book.py init-create [--lark-profile <name>]
-uv run --project . scripts/secret_book.py config-write --app-token <base_token> \
-  --table-id <table_id> [--lark-profile <name>]
-
-# 2. 保存一组凭证（payload 走 stdin，dotenv 格式）
-echo "GITHUB_TOKEN=ghp_xxx" | uv run --project . scripts/secret_book.py save \
-  --name github-main --service github --purpose "主账号推送" --use-global-config
-
-# 3. 使用
-uv run --project . scripts/secret_book.py run  --name github-main --use-global-config -- git push origin main
-uv run --project . scripts/secret_book.py copy --name site-admin --key PASSWORD --use-global-config
-uv run --project . scripts/secret_book.py list --use-global-config
-
-# 4.（可选）安装缺配置兜底规则到各 agent 全局指令文件
-uv run --project . scripts/secret_book.py agent-rule            # 先看检测与安装状态
-uv run --project . scripts/secret_book.py agent-rule --install  # 确认后安装，--remove 可卸载
+lark-cli profile list
 ```
 
-退出码：`0` 成功 · `1` 一般错误 · `3` `run --auto` 无绑定或绑定失效 ·
-`121` 写入结果不明（网络中断在写入过程中发生，本工具不盲重试）。遇到 `121` 先用
-`list` 核实记录是否已写入，再决定重试。
+创建一张新令牌表：
 
-`121` 取在「包装器自身错误」的惯例带（121–125，紧邻 shell 保留的 126/127/128+N）：
-`run` 会原样透传被包装命令的退出码，这个值必须高于被包装命令的常用取值
-（curl 文档化上限约 102），也要避开 `timeout` 的 124/125 与 `xargs` 的 123–125，
-否则调用方无从分辨这个码是台账写入给的还是子命令给的。
+```bash
+uv run --project . scripts/secret_book.py init-create \
+  --lark-profile work-profile
+```
 
-记录 = **凭证组**：`secret` 列是 dotenv 格式键值对，单 token 是单键退化情形，
-OSS 一套 AK/SK/Endpoint/Bucket 是一条四键记录，`run` 一次全量注入。
+第一次运行不会建表，而会退出 `3` 并输出身份确认 JSON。确认其中的 profile、
+`app_id`、用户和 `open_id` 后，把 `confirmation_token` 原样加回命令：
+
+```bash
+uv run --project . scripts/secret_book.py init-create \
+  --lark-profile work-profile \
+  --confirm-identity <confirmation_token>
+```
+
+建表成功后，CLI 会输出一条带 `uv run --project ... scripts/secret_book.py` 前缀、
+可从任意目录直接执行的 `config save` 命令。把其中的 `<名称>` 替换为“工作”等
+唯一名称并执行，即保存第一套配置；第一套会自动成为当前配置。
+
+如果已有符合结构的飞书表，改用：
+
+```bash
+uv run --project . scripts/secret_book.py init-adopt \
+  --url <多维表格 URL> \
+  --lark-profile work-profile
+```
+
+它使用相同的身份确认流程，先校验全部已有字段，再补建缺失字段；字段类型不符时
+不会创建任何字段并拒绝接管。`visible_to` 必须是人员多选字段。
+
+### 2. 新增和切换配置
+
+新增第二套配置的初始化流程相同。也可以在已经知道表定位时直接保存：
+
+```bash
+uv run --project . scripts/secret_book.py config save \
+  --name 个人 \
+  --app-token <base_token> \
+  --table-id <table_id> \
+  --lark-profile personal-profile
+```
+
+直接保存也会先输出身份确认 JSON，确认后追加 `--confirm-identity` 重跑。
+
+```bash
+# 查看所有配置；不会显示表 token、table_id、appId 或 openId
+uv run --project . scripts/secret_book.py config list
+
+# 持久切换唯一的当前配置
+uv run --project . scripts/secret_book.py config use --name 个人
+```
+
+`config use` 只修改本机配置文件，不访问飞书，也不调用 `lark-cli profile use`。
+当前目录若有更高优先级的项目配置，切换仍会成功，但 CLI 会明确警告该目录的业务
+命令仍使用项目配置。
+
+### 3. 保存和使用令牌记录
+
+```bash
+# payload 从 stdin 进入，不把值作为命令参数
+printf '%s\n' 'GITHUB_TOKEN=ghp_xxx' | \
+  uv run --project . scripts/secret_book.py save \
+  --name github-main \
+  --service github \
+  --purpose '主账号推送' \
+  --use-global-config
+
+# 只列元数据，不读取 secret/notes
+uv run --project . scripts/secret_book.py list --use-global-config
+
+# 把值注入子进程环境后执行；值不上屏
+uv run --project . scripts/secret_book.py run \
+  --name github-main \
+  --use-global-config \
+  -- git push origin main
+
+# 把单个值写入剪贴板；输出只显示掩码
+uv run --project . scripts/secret_book.py copy \
+  --name site-admin \
+  --key PASSWORD \
+  --use-global-config
+```
+
+## 管理本地令牌配置
+
+全局配置固定存放在 `~/.config/secret-book/.env`。所有管理命令都直接操作这个文件，
+不需要也不接受 `--use-global-config`。
+
+| 操作 | 命令 | 行为 |
+|---|---|---|
+| 查看 | `config list` | 显示当前标记、稳定 cfg ID、名称和 lark-cli profile |
+| 保存 | `config save --name ... --app-token ... --table-id ... --lark-profile ...` | 名称必须唯一；后续新增不改变当前配置 |
+| 切换 | `config use --name ...` | 只更新唯一的 `active_id` |
+| 更新身份 | `config rebind --name ... --lark-profile ...` | 保留 cfg ID、表定位、名称和当前状态，重新确认并写入身份 |
+| 重命名 | `config rename --name ... --new-name ...` | 稳定 cfg ID 不变 |
+| 删除 | `config remove --name ...` | 有多套时先切走当前配置；最后一套可以直接删除 |
+| 迁移/清理 v1 | `config migrate --name ...` | 迁移旧平面配置；混合格式时填写现有名称以清理旧字段 |
+
+旧平面配置不会自动转换。业务命令发现旧格式时会停止并提示运行 `config migrate`。
+迁移保留注释、`AUTO_UPDATE_CHECK` 和未知键，删除已经被结构化配置替代的五个
+旧资源字段以及没有令牌表身份的 `SECRET_BOOK_IDS`。结构化配置和旧字段并存时，
+结构化配置非空时，同一命令只清理旧字段，不改变已有命名配置；空结构化配置与完整
+旧资源字段并存时，命令会创建第一套命名配置；空结构化配置只与
+`SECRET_BOOK_IDS` 并存时，命令只删除这个不具备表身份的旧绑定。
+
+多套配置保存在同一个结构化环境变量中：
+
+```dotenv
+SECRET_BOOK_CONFIGS_JSON='{"schema_version":1,"active_id":"cfg_xxxxxxxxxx","configs":{"cfg_xxxxxxxxxx":{"name":"工作","app_token":"<base_token>","table_id":"<table_id>","lark_profile":"work-profile","feishu_app_id":"<app_id>","feishu_user_open_id":"<open_id>"}}}'
+```
+
+脚本用文件锁和原子替换处理并发更新，最终文件权限为 `0600`。配置非空时
+`active_id` 必须指向且只指向一个配置。建议只通过 `config` 子命令修改，不要手工
+编辑这段 JSON。若文件已经替换、但目录 `fsync` 失败，CLI 会明确报告“本地写入
+结果不明”；此时先读取配置核对结果，不要直接重放写命令。
+
+## 配置优先级与项目覆盖
+
+令牌表业务命令按以下优先级选择**第一套完整配置**：
+
+1. 进程环境变量
+2. `$PWD/.env.local`
+3. `$PWD/.env`
+4. 仅在传入 `--use-global-config` 时，读取全局当前配置
+
+前三层如要覆盖全局，必须在同一层同时提供：
+
+```dotenv
+SECRET_BOOK_APP_TOKEN=<base_token>
+SECRET_BOOK_TABLE_ID=<table_id>
+SECRET_BOOK_LARK_PROFILE=<profile>
+SECRET_BOOK_FEISHU_APP_ID=<app_id>
+SECRET_BOOK_FEISHU_USER_OPEN_ID=<open_id>
+```
+
+如果高优先级层只出现部分字段，CLI 直接报错，不会从下一层补齐。这能避免表定位、
+profile 和用户身份来自不同配置。
+
+v1 的 `SECRET_BOOK_IDS=sec_xxx,sec_yyy` 没有记录 ID 所属的令牌表身份。切换配置
+后继续使用它可能从另一张表取到同 ID 记录，因此 v2 在查询 Base 记录前拒绝这种
+绑定并退出 `3`。删除该变量，然后使用 `run --id ... --bind` 建立带令牌表身份的
+自动绑定。
+
+向 Git 工作树中的 `.env.local` 写入前，应先确认它没有被 Git 跟踪且确实被忽略。
+
+## 身份固定值校验
+
+保存、改绑、迁移和初始化都先返回
+`secret-book.config-identity-confirmation/v1` JSON，要求确认 lark-cli profile 实际
+对应的应用和用户。确认 token 只对这组身份有效；身份变化后不能复用。
+
+每次执行 save/list/get/run/copy 等令牌表业务命令前，CLI 都先执行：
+
+```text
+lark-cli profile list
+lark-cli auth status --json --profile <配置中的 profile>
+```
+
+只有 profile 存在、登录有效、实际 `appId/openId` 与配置固定值一致时才访问 Base。
+否则退出 `3`，在 stdout 返回 `secret-book.profile-guidance/v1` JSON，不会发送 Base
+请求。全局命名配置可用 `config rebind` 在用户确认后更新；CLI 从不修改 lark-cli
+的全局 active profile。
 
 ## 自动绑定
 
-`run --id sec_xxx --bind -- <命令>` 成功后，(项目根, 命令名) → 记录 id 的
-映射存进本机 `~/.config/secret-book/bindings.json`（只存元数据，无凭证值）。
-之后 `run --auto -- <命令>` 直接按 id 注入；绑定按 id 存储，凭证轮换、记录
-改名都不影响；记录删除时自动解除绑定。`bindings` 列出全部，`unbind` 解除。
-注入后仍鉴权失败时应先 `unbind` 再重新匹配，防止错误绑定反复注入。
+```bash
+# 命令成功后建立绑定
+uv run --project . scripts/secret_book.py run \
+  --id sec_xxx --bind --use-global-config -- git push origin main
 
-## 配置
+# 下次在同一个项目、同一个命令、同一张令牌表身份下直接复用
+uv run --project . scripts/secret_book.py run \
+  --auto --use-global-config -- git push origin main
+```
 
-每个变量独立 first-found-wins：进程环境变量 → `$PWD/.env.local` → `$PWD/.env`
-→ `~/.config/secret-book/.env`（第 4 层仅在传 `--use-global-config` 时读）。
+绑定的完整键是 `(令牌表身份, 项目根, 命令名)`。令牌表身份由 `app_token`、
+`table_id`、`feishu_app_id`、`feishu_user_open_id` 计算 SHA-256；
+`~/.config/secret-book/bindings.json` 只保存哈希、路径、命令和记录 ID，不保存这些
+原值或令牌值。因此切换配置后不会误用另一张表的同名或同 ID 记录。
 
-| 变量 | 作用 |
+`bindings` 列出所有绑定。删除配置或用 `config rebind` 改变身份时不会删除旧
+namespace 的绑定，因为其它全局配置或项目覆盖仍可能使用同一 namespace。旧绑定
+不会被新配置命中；确认它已不再使用后，从 `bindings` 输出取得 namespace 前缀，
+再显式清理。解绑全局当前配置对应的条目：
+
+```bash
+uv run --project . scripts/secret_book.py unbind \
+  --command git \
+  --use-global-config
+```
+
+旧版绑定没有令牌表身份，v2 不猜归属、不查询当前表，也不自动删除；`run --auto`
+会提示重新绑定并退出 `3`。
+
+删除 v1 旧绑定可运行
+`unbind --command git --legacy`。删除已无法由现有配置引用的 v2 绑定时，从
+`bindings` 输出取得前缀，再运行
+`unbind --command git --namespace <namespace-prefix>`。
+
+## 退出码
+
+| 退出码 | 含义 |
 |---|---|
-| `SECRET_BOOK_APP_TOKEN` | 台账 Base 的 base token |
-| `SECRET_BOOK_TABLE_ID` | credentials 表的 table_id |
-| `SECRET_BOOK_IDS` | 项目绑定：`sec_xxx,sec_yyy`，该项目内 `run` 免指定记录 |
-| `SECRET_BOOK_LARK_PROFILE` | 台账所在租户的 lark-cli profile 名 |
+| `0` | CLI 或被包装命令成功 |
+| `1` | 参数、配置、数据或确定性外部调用错误 |
+| `3` | stdout 是身份确认/修复 JSON，或 `run --auto` 没有可用绑定；调用方必须检查 stdout |
+| `121` | 飞书写请求遇到瞬时失败，结果可能已经生效，禁止直接重试 |
+| 其它 | `run` 透传被包装命令的退出码 |
 
-### 多 profile / 多租户
+幂等读取遇到瞬时网络失败最多尝试 3 次。写请求没有幂等键，不自动重试；退出
+`121` 后先用 `list` 或 `get` 核实结果。本地原子写在替换后无法确认目录同步时仍
+退出 `1`，但错误会明确写“本地写入结果不明”，应先读取对应配置文件核对。
 
-`lark-cli` 的 active profile 是全局状态，别的任务随时可能切走它。台账表只存在
-于一个租户里，active 被切走后本工具会用另一个租户的身份查表，报
-`91403 you don't have permission`，`visible_to` 的比对基准（当前用户 open_id）
-也会跟着错。
+## Agent Skill 安装
 
-配了 `SECRET_BOOK_LARK_PROFILE=<name>` 后，脚本给每一次 lark-cli 调用追加
-`--profile <name>`（表读写、`auth status`、`+base-create`、`+url-resolve`），
-**不调 `lark-cli profile use`**，不产生全局副作用。未配置时不传 `--profile`，
-沿用 active profile。命令行 `--lark-profile <name>` 覆盖配置——`init-create` /
-`init-adopt` 跑在配置写入之前，指定建表落在哪个租户只能用它。
+本仓库使用 [Agent Skills](https://agentskills.io) 格式，Claude Code 与 Codex 共用
+同一份 `SKILL.md`。clone 后分别建立指向仓库实体的 symlink：
 
 ```bash
-lark-cli profile list                                   # 看有哪些 profile
-uv run --project . scripts/secret_book.py config-write \
-  --app-token <base_token> --table-id <table_id> --lark-profile <name>
+ln -s "$(pwd)" ~/.claude/skills/secret-book
+ln -s "$(pwd)" ~/.agents/skills/secret-book
 ```
 
-## 作为 Agent Skill 安装
+`agent-rule --install` 可以把“命令缺少令牌时先尝试 secret-book”的规则写入已检测到
+的 agent 全局指令文件。它会修改用户文件，执行前必须先查看目标和规则全文并明确
+确认；`agent-rule --remove` 可精确移除。不要从临时 worktree 安装全局规则。
 
-本仓库遵循 [Agent Skills](https://agentskills.io) 开放标准，Claude Code 与
-Codex 通用。clone 后建 symlink：
+## 令牌表结构
 
-```bash
-ln -s "$(pwd)" ~/.claude/skills/secret-book   # Claude Code
-ln -s "$(pwd)" ~/.agents/skills/secret-book   # Codex
-```
+初始化创建或校验 9 列：
 
-行为约定（agent 必须遵守，详见 [SKILL.md](SKILL.md)）：凭证值只经脚本流向
-子进程环境或剪贴板；多候选记录必须让用户点名，禁止 agent 自行猜选；
-`agent-rule --install` 前必须向用户展示目标文件与规则全文并取得同意。
+`id` · `name` · `service` · `account` · `purpose` · `secret` · `expires_at` ·
+`notes` · `visible_to`
 
-## 表结构（9 列，init 自动创建）
+`id` 是 `sec_` 加 10 位随机字符的稳定机器键。`secret` 使用 dotenv 格式。
+`visible_to` 为空表示不限制，非空表示只有名单内用户可取用；名单外记录在
+list/get/run/copy 中都不可见。直接在表中新增且没有 `id` 的行，会在后续读取时
+自动补写 ID。
 
-`id`（sec_ 随机机器键）· `name`（人类别名）· `service` · `account` ·
-`purpose`（意图匹配主依据）· `secret`（dotenv payload）· `expires_at` · `notes` ·
-`visible_to`（人员，可见范围）
-
-直接在表格里手工加行也可以——缺 `id` 的行会在下次任意操作时自动补写。
-
-`visible_to` 为空时记录不受限；非空时仅名单内用户能取用——当前用户（lark-cli
-登录身份）不在名单里的记录，list 不显示、按 name/id 点名也取不到，没有绕过
-开关。名单直接在表格里维护。旧表缺这一列时全表不受限，跑一次 `init-adopt`
-会自动补建。
+<!-- release-table:begin -->
+| 目标 | 版本 | Release |
+|---|---|---|
+| secret-book | 2.0.0 | [v2.0.0](https://github.com/cookaihq/secret-book/releases/tag/v2.0.0) |
+<!-- release-table:end -->
