@@ -259,7 +259,12 @@ uv run --project . scripts/secret_book.py run \
 `~/.config/secret-book/bindings.json` 只保存哈希、路径、命令和记录 ID，不保存这些
 原值或令牌值。因此切换配置后不会误用另一张表的同名或同 ID 记录。
 
-`bindings` 列出所有绑定。删除配置或用 `config rebind` 改变身份时不会删除旧
+`bindings` 只读取本地 `bindings.json` 并列出所有绑定，不解析令牌配置，不接受
+`--use-global-config`，也不访问飞书令牌表。`unbind` 同样只修改本地绑定，不发起
+令牌表请求；按全局默认配置选择绑定时需要 `--use-global-config`，指定
+`--namespace` 或 `--legacy` 时则不解析令牌配置。
+
+删除配置或用 `config rebind` 改变身份时不会删除旧
 namespace 的绑定，因为其它全局配置或项目覆盖仍可能使用同一 namespace。旧绑定
 不会被新配置命中；确认它已不再使用后，从 `bindings` 输出取得 namespace 前缀，
 再显式清理。解绑全局当前配置对应的条目：

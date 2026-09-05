@@ -110,10 +110,15 @@ SECRET_BOOK_CONFIGS_JSON='{"schema_version":1,"active_id":"cfg_xxxxxxxxxx","conf
 切换请求不需要用户再选择如何改写存储格式。
 
 切换结果以回读为准，回复只需包含已核实的当前名称及必要的覆盖警告。用户询问
-后续取用方式时，再说明：`config list/use` 是直接管理全局文件的命令，不需要也
-不接受 `--use-global-config`；`list/get/save/run/copy` 等业务命令必须显式带这个
-flag 才会读取全局默认配置。不带 flag 时，即使进程和项目都没有配置，也不会回退
-到全局默认配置。不要将配置管理命令的行为类推到业务命令。
+后续取用方式时，按具体命令说明，不将其它命令的行为类推过来：
+
+- `config list/use` 直接管理全局配置文件，不需要也不接受 `--use-global-config`。
+- `list/get/save/run/copy` 读取全局默认配置时，必须显式带 `--use-global-config`。
+  不带 flag 时，即使进程和项目都没有配置，也不会回退到全局默认配置。
+- `bindings` 只读取本地 `bindings.json`，不解析令牌配置，不接受这个 flag，也不
+  访问飞书令牌表。
+- `unbind` 按全局默认配置选择绑定时需要这个 flag；指定 `--namespace` 或
+  `--legacy` 时不解析令牌配置。它只删除本地绑定，不发起令牌表请求。
 
 旧版全局平面变量不会自动迁移。发现旧格式时，业务命令拒绝访问令牌表，并要求
 执行 `config migrate`。迁移会删除旧的五个资源字段和不具备表身份的
