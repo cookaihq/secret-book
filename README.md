@@ -1,330 +1,228 @@
 # secret-book
 
-**飞书令牌表 + agent 取用通道**：把 token、API key、账号密码、OSS/数据库连接参数
-保存到你自己的飞书多维表格。Claude Code、Codex 等 agent 可以按用途或精确 ID
-查找令牌，把值注入子进程或送入剪贴板，值不会显示在终端输出中。
+让 Claude Code、Codex 等 Agent 从你自己的飞书多维表格中查找凭证，并把凭证临时
+注入需要它的命令或写入剪贴板。secret-book 自身只显示记录元数据、键名和掩码，
+不会把凭证值打印到终端。
 
-本机可以保存多套有名称的令牌配置，例如“工作”“个人”。任何时刻只有一套
-当前配置，也就是默认配置；你可以直接在对话中说“默认设置改为个人”或“切换到
-工作配置”，agent 会核对名称并持久切换。
+## 使用前先确认
 
-> 本仓库原名 `cred-ledger`，2026-08-10 更名为 `secret-book`。
+- **凭证以明文保存在飞书多维表格中，不加密。secret-book 不是密码管理器。**
+- 飞书平台方和任何拥有表格权限的人都能看到数据。飞书多维表格保留 180 天历史
+  记录，删除后另有 30 天回收站。
+- 只建议保存可以随时轮换的中低价值凭证，并把令牌表权限收紧到仅本人。高价值
+  凭证应使用 1Password 等专业密码管理器。
+- 在 Agent 对话中粘贴凭证会让它进入会话记录。`run` 启动的目标程序也可能自行
+  打印环境变量；secret-book 不会过滤目标程序的输出。
 
-## 使用前请确认
+secret-book 的安全目标是让凭证留在你自己的飞书租户中，并避免 Agent 在取用时把
+值写进命令参数、回复或日志；它不提供端到端加密。
 
-- **令牌以明文保存在飞书多维表格中，不加密。这不是密码管理器。**
-- 安全边界由你的飞书租户和令牌表权限决定。平台方与任何有表格权限的人都能看到
-  数据；飞书多维表格保留 180 天历史记录，删除后另有 30 天回收站。
-- 这里只适合保存可随时轮换的中低价值令牌，并应把令牌表权限收紧到仅本人。
-  高价值令牌应使用 1Password 等专业密码管理器。
-- secret-book 的目标是让数据留在你自己的飞书租户，同时减少 agent 反复向你索要
-  token 的过程；它不提供端到端加密。
+## 直接这样使用
 
-## 核心概念
-
-- **令牌表**：一张飞书多维表格，保存多条令牌记录。
-- **令牌记录**：表中的一行，可以包含一个 token，也可以包含一组需要同时使用的
-  dotenv 键值，例如 OSS 的 AK、SK、Endpoint 和 Bucket。
-- **令牌配置**：本机访问一张令牌表所需的 `app_token`、`table_id`、lark-cli
-  profile 和固定身份。全局可保存多套。
-- **当前配置 / 默认配置**：全局多套令牌配置中由 `active_id` 唯一选中的一套。
-  两者是同一个概念，在 secret-book 令牌配置语境中也称“默认设置”。业务命令带
-  `--use-global-config` 且没有进程环境或项目配置覆盖时使用它。
-
-每套令牌配置只对应一张令牌表和一个经过确认的飞书身份。切换配置不会修改
-lark-cli 的 active profile；每次访问都显式传入该配置自己的 profile。
-
-## 快速开始
-
-前置条件：macOS 或 Linux，已安装并登录 [lark-cli](https://open.feishu.cn/)，并安装
-[uv](https://docs.astral.sh/uv/) >= 0.8。当前运行时路径和文件锁依赖 POSIX API，
-不支持 Windows。以下命令都在仓库根目录执行。
-
-### 1. 创建第一套配置
-
-查看本机已有的 lark-cli profile：
-
-```bash
-lark-cli profile list
-```
-
-创建一张新令牌表：
-
-```bash
-uv run --project . scripts/secret_book.py init-create \
-  --lark-profile work-profile
-```
-
-第一次运行不会建表，而会退出 `3` 并输出身份确认 JSON。确认其中的 profile、
-`app_id`、用户和 `open_id` 后，把 `confirmation_token` 原样加回命令：
-
-```bash
-uv run --project . scripts/secret_book.py init-create \
-  --lark-profile work-profile \
-  --confirm-identity <confirmation_token>
-```
-
-建表成功后，CLI 会输出一条带 `uv run --project ... scripts/secret_book.py` 前缀、
-可从任意目录直接执行的 `config save` 命令。把其中的 `<名称>` 替换为“工作”等
-唯一名称并执行，即保存第一套配置；第一套会自动成为当前配置。
-
-如果已有符合结构的飞书表，改用：
-
-```bash
-uv run --project . scripts/secret_book.py init-adopt \
-  --url <多维表格 URL> \
-  --lark-profile work-profile
-```
-
-它使用相同的身份确认流程，先校验全部已有字段，再补建缺失字段；字段类型不符时
-不会创建任何字段并拒绝接管。`visible_to` 必须是人员多选字段。
-
-### 2. 新增和切换配置
-
-新增第二套配置的初始化流程相同。也可以在已经知道表定位时直接保存：
-
-```bash
-uv run --project . scripts/secret_book.py config save \
-  --name 个人 \
-  --app-token <base_token> \
-  --table-id <table_id> \
-  --lark-profile personal-profile
-```
-
-直接保存也会先输出身份确认 JSON，确认后追加 `--confirm-identity` 重跑。
-
-```bash
-# 查看所有配置；不会显示表 token、table_id、appId 或 openId
-uv run --project . scripts/secret_book.py config list
-
-# 持久切换默认配置（当前配置）
-uv run --project . scripts/secret_book.py config use --name 个人
-```
-
-“默认设置改为个人”“把默认配置设为个人”“以后默认用个人”和“切换当前配置到
-个人”都对应上面的 `config use --name 个人`。agent 先用 `config list` 核对名称，
-唯一匹配后执行切换，再回读确认；找不到名称时列出已有配置供选择。
-当前项由“当前配置”列的“是”标记识别，与列表顺序无关。目标已经是当前项时，
-agent 会报告“默认配置（当前配置）已经是个人”，不会声称从另一套配置切换过来。
-`config list` 查看本机配置，`list` 查询飞书令牌记录，两者用途不同。
-
-`config use` 只修改本机配置文件，不访问飞书，也不调用 `lark-cli profile use`。
-全部命名配置、表定位和身份固定值都会保留，只有 `active_id` 改为所选配置的 ID。
-当前目录若有更高优先级的项目配置，切换仍会成功，但 CLI 会明确警告该目录的业务
-命令仍使用项目配置。
-
-### 3. 保存和使用令牌记录
-
-```bash
-# payload 从 stdin 进入，不把值作为命令参数
-printf '%s\n' 'GITHUB_TOKEN=ghp_xxx' | \
-  uv run --project . scripts/secret_book.py save \
-  --name github-main \
-  --service github \
-  --purpose '主账号推送' \
-  --use-global-config
-
-# 只列元数据，不读取 secret/notes
-uv run --project . scripts/secret_book.py list --use-global-config
-
-# 把值注入子进程环境后执行；值不上屏
-uv run --project . scripts/secret_book.py run \
-  --name github-main \
-  --use-global-config \
-  -- git push origin main
-
-# 把单个值写入剪贴板；输出只显示掩码
-uv run --project . scripts/secret_book.py copy \
-  --name site-admin \
-  --key PASSWORD \
-  --use-global-config
-```
-
-## 管理本地令牌配置
-
-全局配置固定存放在 `~/.config/secret-book/.env`。所有管理命令都直接操作这个文件，
-不需要也不接受 `--use-global-config`。
-
-| 操作 | 命令 | 行为 |
-|---|---|---|
-| 查看 | `config list` | 显示当前标记、稳定 cfg ID、名称和 lark-cli profile |
-| 保存 | `config save --name ... --app-token ... --table-id ... --lark-profile ...` | 名称必须唯一；后续新增不改变当前配置 |
-| 切换默认配置（当前配置） | `config use --name ...` | 只更新唯一的 `active_id`，保留全部配置 |
-| 更新身份 | `config rebind --name ... --lark-profile ...` | 保留 cfg ID、表定位、名称和当前状态，重新确认并写入身份 |
-| 重命名 | `config rename --name ... --new-name ...` | 稳定 cfg ID 不变 |
-| 删除 | `config remove --name ...` | 有多套时先切走当前配置；最后一套可以直接删除 |
-| 迁移/清理 v1 | `config migrate --name ...` | 迁移旧平面配置；混合格式时填写现有名称以清理旧字段 |
-
-旧平面配置不会自动转换。业务命令发现旧格式时会停止并提示运行 `config migrate`。
-迁移保留注释、`AUTO_UPDATE_CHECK` 和未知键，删除已经被结构化配置替代的五个
-旧资源字段以及没有令牌表身份的 `SECRET_BOOK_IDS`。结构化配置和旧字段并存时，
-结构化配置非空时，同一命令只清理旧字段，不改变已有命名配置；空结构化配置与完整
-旧资源字段并存时，命令会创建第一套命名配置；空结构化配置只与
-`SECRET_BOOK_IDS` 并存时，命令只删除这个不具备表身份的旧绑定。
-
-多套配置保存在同一个结构化环境变量中：
-
-```dotenv
-SECRET_BOOK_CONFIGS_JSON='{"schema_version":1,"active_id":"cfg_xxxxxxxxxx","configs":{"cfg_xxxxxxxxxx":{"name":"工作","app_token":"<base_token>","table_id":"<table_id>","lark_profile":"work-profile","feishu_app_id":"<app_id>","feishu_user_open_id":"<open_id>"}}}'
-```
-
-脚本用文件锁和原子替换处理并发更新，最终文件权限为 `0600`。配置非空时
-`active_id` 必须指向且只指向一个配置，它同时决定当前配置和默认配置。建议只通过
-`config` 子命令修改，不要手工编辑这段 JSON。若文件已经替换、但目录 `fsync`
-失败，CLI 会明确报告“本地写入结果不明”；此时先读取配置核对结果，不要直接重放
-写命令。
-
-## 配置优先级与项目覆盖
-
-令牌表业务命令按以下优先级选择**第一套完整配置**：
-
-1. 进程环境变量
-2. `$PWD/.env.local`
-3. `$PWD/.env`
-4. 仅在传入 `--use-global-config` 时，读取全局默认配置（当前配置）
-
-不带 `--use-global-config` 时，业务命令不会读取全局默认配置；即使前三层均未
-配置，也不会自动回退到它。`config list/use` 直接管理全局文件，无需这个 flag，
-但这不改变业务命令的读取条件。
-
-前三层如要覆盖全局，必须在同一层同时提供：
-
-```dotenv
-SECRET_BOOK_APP_TOKEN=<base_token>
-SECRET_BOOK_TABLE_ID=<table_id>
-SECRET_BOOK_LARK_PROFILE=<profile>
-SECRET_BOOK_FEISHU_APP_ID=<app_id>
-SECRET_BOOK_FEISHU_USER_OPEN_ID=<open_id>
-```
-
-如果高优先级层只出现部分字段，CLI 直接报错，不会从下一层补齐。这能避免表定位、
-profile 和用户身份来自不同配置。
-
-v1 的 `SECRET_BOOK_IDS=sec_xxx,sec_yyy` 没有记录 ID 所属的令牌表身份。切换配置
-后继续使用它可能从另一张表取到同 ID 记录，因此 v2 在查询 Base 记录前拒绝这种
-绑定并退出 `3`。删除该变量，然后使用 `run --id ... --bind` 建立带令牌表身份的
-自动绑定。
-
-向 Git 工作树中的 `.env.local` 写入前，应先确认它没有被 Git 跟踪且确实被忽略。
-
-## 旧版安装无法读取多配置时
-
-同一用户的 Claude Code、Codex、WorkBuddy 等 Agent 可能各有一份 Skill 安装，
-但共用 `~/.config/secret-book/.env`。v1.2.0 只读取旧平面变量，无法读取 v2 的
-`SECRET_BOOK_CONFIGS_JSON`。配置内的 `schema_version` 是格式版本，不是 Skill
-版本；不能仅凭旧脚本报“缺少配置”，就认定该文件无效或不是脚本生成的。
-
-这时应先确认目标 Agent 实际加载的 `SKILL.md`、脚本路径、版本和更新来源，再将
-该安装同步到支持现有格式的版本。更新检查没有提示新版本，不代表当前安装已兼容；
-新版可能尚未发布，检查也可能因节流或网络问题跳过。同步后在该 Agent 的新会话中
-执行 `config list`，确认全部配置可读，再执行原来的切换命令并回读验证。
-
-切换默认配置不会要求降级配置格式。不要把多配置 JSON 改回平面变量、只保留目标
-配置、把其它配置放进注释，或另写平面覆盖来适配旧脚本；单独改 `active_id` 也不能
-让旧脚本读懂新格式。暂时无法更新时，应保留完整配置并报告版本阻塞。
-升级共享配置格式前，还应确认其它共用该文件的已知安装也支持新格式。
-
-## 身份固定值校验
-
-保存、改绑、迁移和初始化都先返回
-`secret-book.config-identity-confirmation/v1` JSON，要求确认 lark-cli profile 实际
-对应的应用和用户。确认 token 只对这组身份有效；身份变化后不能复用。
-
-每次执行 save/list/get/run/copy 等令牌表业务命令前，CLI 都先执行：
+安装后可以显式调用 Skill：
 
 ```text
-lark-cli profile list
-lark-cli auth status --json --profile <配置中的 profile>
+# Claude Code
+/secret-book 把这个 GitHub Token 保存为一条令牌记录
+
+# Codex
+$secret-book 用我保存的 CNB 凭证执行 git push
 ```
 
-只有 profile 存在、登录有效、实际 `appId/openId` 与配置固定值一致时才访问 Base。
-否则退出 `3`，在 stdout 返回 `secret-book.profile-guidance/v1` JSON，不会发送 Base
-请求。全局命名配置可用 `config rebind` 在用户确认后更新；CLI 从不修改 lark-cli
-的全局 active profile。
+也可以直接描述需求：
 
-## 自动绑定
-
-```bash
-# 命令成功后建立绑定
-uv run --project . scripts/secret_book.py run \
-  --id sec_xxx --bind --use-global-config -- git push origin main
-
-# 下次在同一个项目、同一个命令、同一张令牌表身份下直接复用
-uv run --project . scripts/secret_book.py run \
-  --auto --use-global-config -- git push origin main
-```
-
-绑定的完整键是 `(令牌表身份, 项目根, 命令名)`。令牌表身份由 `app_token`、
-`table_id`、`feishu_app_id`、`feishu_user_open_id` 计算 SHA-256；
-`~/.config/secret-book/bindings.json` 只保存哈希、路径、命令和记录 ID，不保存这些
-原值或令牌值。因此切换配置后不会误用另一张表的同名或同 ID 记录。
-
-`bindings` 只读取本地 `bindings.json` 并列出所有绑定，不解析令牌配置，不接受
-`--use-global-config`，也不访问飞书令牌表。`unbind` 同样只修改本地绑定，不发起
-令牌表请求；按全局默认配置选择绑定时需要 `--use-global-config`，指定
-`--namespace` 或 `--legacy` 时则不解析令牌配置。
-
-删除配置或用 `config rebind` 改变身份时不会删除旧
-namespace 的绑定，因为其它全局配置或项目覆盖仍可能使用同一 namespace。旧绑定
-不会被新配置命中；确认它已不再使用后，从 `bindings` 输出取得 namespace 前缀，
-再显式清理。解绑全局当前配置对应的条目：
-
-```bash
-uv run --project . scripts/secret_book.py unbind \
-  --command git \
-  --use-global-config
-```
-
-旧版绑定没有令牌表身份，v2 不猜归属、不查询当前表，也不自动删除；`run --auto`
-会提示重新绑定并退出 `3`。
-
-删除 v1 旧绑定可运行
-`unbind --command git --legacy`。删除已无法由现有配置引用的 v2 绑定时，从
-`bindings` 输出取得前缀，再运行
-`unbind --command git --namespace <namespace-prefix>`。
-
-## 退出码
-
-| 退出码 | 含义 |
+| 你对 Agent 说 | secret-book 执行的操作 |
 |---|---|
-| `0` | CLI 或被包装命令成功 |
-| `1` | 参数、配置、数据或确定性外部调用错误 |
-| `3` | stdout 是身份确认/修复 JSON，或 `run --auto` 没有可用绑定；调用方必须检查 stdout |
-| `121` | 飞书写请求遇到瞬时失败，结果可能已经生效，禁止直接重试 |
-| 其它 | `run` 透传被包装命令的退出码 |
+| “保存这个 API key，用途是调用测试环境” | 从标准输入接收值并新建令牌记录 |
+| “列出 GitHub 相关凭证，不要显示值” | 只查询名称、服务、账号、用途和到期时间 |
+| “用 `<记录名>` 执行这条命令” | 把记录中的键值注入子进程环境后执行命令 |
+| “把 `<记录名>` 里的 `PASSWORD` 复制出来” | 把单个值写入系统剪贴板，只显示掩码 |
+| “默认设置切换到工作” | 切换本机当前使用的令牌配置，不修改 lark-cli 的当前 profile |
 
-幂等读取遇到瞬时网络失败最多尝试 3 次。写请求没有幂等键，不自动重试；退出
-`121` 后先用 `list` 或 `get` 核实结果。本地原子写在替换后无法确认目录同步时仍
-退出 `1`，但错误会明确写“本地写入结果不明”，应先读取对应配置文件核对。
+如果名称可能对应多条记录，Agent 会先列出不含凭证值的候选项，不会自行选择。
 
-## Agent Skill 安装
+## 安装
 
-本仓库使用 [Agent Skills](https://agentskills.io) 格式，Claude Code 与 Codex 共用
-同一份 `SKILL.md`。clone 后分别建立指向仓库实体的 symlink：
+支持 macOS 和 Linux，当前不支持 Windows。需要：
+
+- [uv](https://docs.astral.sh/uv/) >= 0.8
+- 已安装 `lark-cli`，并至少有一个 user 身份完成登录的 profile
+- 能访问飞书开放平台
+
+仓库根目录就是 Skill 目录。同一份 `SKILL.md` 同时用于 Claude Code 和 Codex：
 
 ```bash
-ln -s "$(pwd)" ~/.claude/skills/secret-book
-ln -s "$(pwd)" ~/.agents/skills/secret-book
+mkdir -p "${HOME}/agent-repos" "${HOME}/.claude/skills" "${HOME}/.agents/skills"
+git clone https://github.com/cookaihq/secret-book.git "${HOME}/agent-repos/secret-book"
+
+# Claude Code
+ln -s "${HOME}/agent-repos/secret-book" "${HOME}/.claude/skills/secret-book"
+
+# Codex
+ln -s "${HOME}/agent-repos/secret-book" "${HOME}/.agents/skills/secret-book"
 ```
 
-`agent-rule --install` 可以把“命令缺少令牌时先尝试 secret-book”的规则写入已检测到
-的 agent 全局指令文件。它会修改用户文件，执行前必须先查看目标和规则全文并明确
-确认；`agent-rule --remove` 可精确移除。不要从临时 worktree 安装全局规则。
+第一次运行脚本时，uv 会按仓库内的锁文件创建
+`agent-repos/secret-book/.venv`。后续更新使用：
 
-## 令牌表结构
+```bash
+git -C "${HOME}/agent-repos/secret-book" pull --ff-only
+```
 
-初始化创建或校验 9 列：
+Skill 会定期检查远端是否有新版本，但不会自行拉取；发现更新后会先征求确认。
 
-`id` · `name` · `service` · `account` · `purpose` · `secret` · `expires_at` ·
-`notes` · `visible_to`
+## 首次设置
 
-`id` 是 `sec_` 加 10 位随机字符的稳定机器键。`secret` 使用 dotenv 格式。
-`visible_to` 为空表示不限制，非空表示只有名单内用户可取用；名单外记录在
-list/get/run/copy 中都不可见。直接在表中新增且没有 `id` 的行，会在后续读取时
-自动补写 ID。
+一套“令牌配置”对应一张飞书令牌表、一个 lark-cli profile 和一个经过确认的飞书
+身份。第一次使用时，在下面两种方式中选择一种。以下对话示例使用 Claude Code 的
+`/secret-book`；在 Codex 中请改用 `$secret-book`。
+
+### 新建令牌表
+
+告诉 Agent 要使用的 lark-cli profile 和配置名称：
+
+```text
+/secret-book 使用 lark-cli profile `<profile>` 新建一张令牌表，
+并把这套配置命名为 `<配置名>`
+```
+
+### 接管已有令牌表
+
+```text
+/secret-book 接管这张令牌表：`<飞书多维表格 URL>`，
+使用 lark-cli profile `<profile>`，配置名为 `<配置名>`
+```
+
+两种方式都会按相同流程执行：
+
+1. secret-book 读取所选 profile 当前登录的应用和用户身份。
+2. Agent 展示 profile、`app_id`、用户名和 `open_id`，等待你确认。
+3. 确认后才创建或校验令牌表，并保存本机令牌配置。
+
+接管已有表时，secret-book 会先校验已有字段，再补建缺失字段。字段类型不符合要求
+时不会修改表结构。第一套令牌配置会自动成为当前配置，也就是默认配置。
+
+## 保存和取用凭证
+
+一条令牌记录可以只保存一个值，也可以保存一组需要同时注入的 dotenv 键值，例如
+OSS 的 `ACCESS_KEY_ID`、`ACCESS_KEY_SECRET`、`ENDPOINT` 和 `BUCKET`。
+
+secret-book 提供两种取值方式：
+
+- **执行命令**：`run` 把记录中的键值加入子进程环境。secret-book 只显示注入的
+  键名，不显示值。
+- **复制到剪贴板**：`copy` 适合必须手工粘贴的场景。多键记录需要指定一个键名。
+
+`get` 只返回记录元数据、备注和键名，不返回凭证值。`list` 只返回记录列表的元数据。
+
+### 自动记住某个命令使用的凭证
+
+第一次成功执行命令时可以建立绑定：
+
+```text
+/secret-book 用记录 `<记录名>` 执行 git push；成功后记住这次选择
+```
+
+绑定按“令牌表身份 + 项目目录 + 命令名”区分。以后在同一项目中执行相同命令时，
+Agent 可以复用这条绑定；切换到另一张令牌表后不会误用原表中的记录。可以让 Agent
+“列出 secret-book 自动绑定”或“解除当前项目中 git 命令的绑定”。
+
+## 多套令牌配置
+
+本机可以保存多套有名称的令牌配置，例如“工作”和“个人”。任何时刻只有一套当前
+配置，它也是默认配置。
+
+- “列出令牌配置”只显示名称、稳定 ID、lark-cli profile 和当前标记。
+- “默认设置切换到 `<配置名>`”会持久切换当前配置。
+- 切换不会删除其它配置，也不会调用 `lark-cli profile use`。
+- 每次访问飞书前，secret-book 都会确认配置中的 profile 仍是原先确认过的应用和
+  用户；身份发生变化时会停止访问并引导重新绑定。
+
+## 可选：让 Agent 在缺少凭证时调用 secret-book
+
+可以让 Agent 安装 secret-book 的凭证兜底规则：
+
+```text
+/secret-book 安装凭证兜底规则
+```
+
+这会修改检测到的 Agent 全局指令文件。安装前，Agent 必须展示目标文件和完整规则，
+由你确认后才写入。安装后，当命令因为缺少凭证而失败时，Agent 会：
+
+1. 先尝试当前项目、命令和令牌表身份已有的自动绑定。
+2. 没有绑定时只查询令牌记录元数据，并按用途匹配。
+3. 只有唯一匹配时才使用；多条候选或无法匹配时由你选择。
+4. 鉴权失败后解除旧绑定，不会用同一条凭证反复重试。
+
+## 命令行使用
+
+一般情况下直接让 Agent 调用 Skill 即可。需要手工操作时，从仓库目录执行：
+
+```bash
+cd "${HOME}/agent-repos/secret-book"
+uv run --project . scripts/secret_book.py --help
+```
+
+常用命令：
+
+| 操作 | 命令 |
+|---|---|
+| 查看本机令牌配置 | `config list` |
+| 切换当前配置 | `config use --name <配置名>` |
+| 新建令牌表 | `init-create --lark-profile <profile>` |
+| 接管令牌表 | `init-adopt --url <多维表格 URL> --lark-profile <profile>` |
+| 保存令牌记录 | `save --name <名称> --service <服务> --purpose <用途> --use-global-config` |
+| 列出令牌记录 | `list --use-global-config` |
+| 查看一条记录的元数据和键名 | `get --name <名称> --use-global-config` |
+| 注入环境变量并执行命令 | `run --name <名称> --use-global-config -- <命令>` |
+| 执行成功后建立自动绑定 | `run --id <记录 ID> --bind --use-global-config -- <命令>` |
+| 复用自动绑定 | `run --auto --use-global-config -- <命令>` |
+| 复制单个值 | `copy --name <名称> --key <键名> --use-global-config` |
+| 查看自动绑定 | `bindings` |
+
+`save` 从标准输入读取 dotenv，不从命令参数读取凭证值：
+
+```bash
+printf '%s\n' 'GITHUB_TOKEN=<token>' | \
+  uv run --project . scripts/secret_book.py save \
+  --name <名称> --service github --purpose <用途> --use-global-config
+```
+
+`config list/use` 直接管理全局配置，不接受 `--use-global-config`。`save`、`list`、
+`get`、`run` 和 `copy` 要使用全局当前配置时，必须显式添加这个参数。
+
+## 常见问题
+
+### 提示确认身份或修复 profile
+
+退出码 `3` 可能表示需要确认飞书身份、修复 profile，或者 `run --auto` 没有可用
+绑定。Agent 会读取结构化提示并说明下一步；不要把它当成普通失败直接重复执行。
+
+### 写请求的结果无法确定
+
+飞书写请求遇到瞬时网络错误时不会自动重试，退出码为 `121`。这时先用 `list` 或
+`get` 检查记录是否已经写入，再决定下一步，避免创建重复记录。
+
+### 旧安装无法读取现有配置
+
+同一用户的多个 Agent 可能安装了不同版本的 secret-book，但共用
+`~/.config/secret-book/.env`。如果旧安装无法识别多配置格式，应先更新该安装并在
+新会话中执行 `config list`；不要把现有配置降级成旧格式。
+
+### 项目需要使用另一张令牌表
+
+业务命令按以下顺序选择第一套完整配置：进程环境变量、当前目录的 `.env.local`、
+当前目录的 `.env`，最后才是在显式使用 `--use-global-config` 时读取全局当前配置。
+项目配置必须在同一层提供完整的表定位、profile 和身份字段，不能跨层拼接。
+
+## 版本与 Release
 
 <!-- release-table:begin -->
 | 目标 | 版本 | Release |
 |---|---|---|
 | secret-book | 2.0.1 | [v2.0.1](https://github.com/cookaihq/secret-book/releases/tag/v2.0.1) |
 <!-- release-table:end -->
+
+## License
+
+[MIT](LICENSE)
