@@ -104,6 +104,8 @@ uv run --project . scripts/secret_book.py config use --name 个人
 “默认设置改为个人”“把默认配置设为个人”“以后默认用个人”和“切换当前配置到
 个人”都对应上面的 `config use --name 个人`。agent 先用 `config list` 核对名称，
 唯一匹配后执行切换，再回读确认；找不到名称时列出已有配置供选择。
+当前项由“当前配置”列的“是”标记识别，与列表顺序无关。目标已经是当前项时，
+agent 会报告“默认配置（当前配置）已经是个人”，不会声称从另一套配置切换过来。
 `config list` 查看本机配置，`list` 查询飞书令牌记录，两者用途不同。
 
 `config use` 只修改本机配置文件，不访问飞书，也不调用 `lark-cli profile use`。
@@ -180,6 +182,10 @@ SECRET_BOOK_CONFIGS_JSON='{"schema_version":1,"active_id":"cfg_xxxxxxxxxx","conf
 2. `$PWD/.env.local`
 3. `$PWD/.env`
 4. 仅在传入 `--use-global-config` 时，读取全局默认配置（当前配置）
+
+不带 `--use-global-config` 时，业务命令不会读取全局默认配置；即使前三层均未
+配置，也不会自动回退到它。`config list/use` 直接管理全局文件，无需这个 flag，
+但这不改变业务命令的读取条件。
 
 前三层如要覆盖全局，必须在同一层同时提供：
 
