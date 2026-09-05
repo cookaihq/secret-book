@@ -1,17 +1,18 @@
 ---
 name: secret-book
-version: 2.0.0
+version: 2.0.1
 description: >-
-  v2.0.0｜令牌：把 token、API key、账号密码、OSS/数据库等配置组保存到用户自己的
+  v2.0.1｜令牌：把 token、API key、账号密码、OSS/数据库等配置组保存到用户自己的
   飞书令牌表里，agent 按意图或精确 ID 查询取用，取用输出一律掩码；本机可保存多套
-  有名称的令牌配置，并持久切换唯一的当前配置。当用户说
+  有名称的令牌配置，并持久切换唯一的当前配置（默认配置）。当用户说
   "存一下这个 token/API key/密钥/凭证"、"用我存的 xx 推送/登录/调用"、"我的
-  OSS/数据库配置"、"切换到工作配置"、"查看当前配置"、"令牌/secret book"，
+  OSS/数据库配置"、"切换到工作配置"、"查看当前配置/默认配置"、"默认设置改为个人"、
+  "令牌/secret book"，或遇到 secret-book 安装版本与配置格式不兼容，
   或任何命令、skill、工具因缺少 API key/token/凭证配置而失败、需要查令牌表兜底
   注入时使用。Credential
   storage in the user's own Feishu Bitable: save/list/run/copy tokens, API keys,
   logins and config groups; stores multiple named local configurations with one
-  active configuration; remembers per-(token-table, project, command) bindings.
+  active (default) configuration; remembers per-(token-table, project, command) bindings.
   Requires lark-cli logged in. Do NOT use for encrypted vault needs: this skill
   stores plaintext; point users to a real password manager for high-value secrets.
 compatibility: 需要 macOS 或 Linux、已安装并登录 lark-cli（user 身份）、uv >= 0.8（脚本运行时由 uv 管理，首次运行自动建 .venv）、可访问飞书开放平台的网络；当前不支持 Windows；Claude Code 与 Codex 双端可用
@@ -64,7 +65,11 @@ skill 自带的 uv 项目。
 
 一套令牌配置负责定位一张飞书令牌表，并固定访问该表时允许使用的飞书身份。
 全局文件 `~/.config/secret-book/.env` 可保存多套有名称的配置，但任何时刻只有
-一套“当前配置”。业务命令只有显式带 `--use-global-config` 才会启用这一层。
+一套“当前配置”，它就是“默认配置”。在 secret-book 令牌配置语境中，“默认设置”
+也指这套配置。三种说法都对应 `SECRET_BOOK_CONFIGS_JSON.active_id` 选中的同一项，
+没有第二个默认项；`config list` 的“当前配置”标记就是默认配置标记。
+业务命令只有显式带 `--use-global-config` 才会启用这一层，进程环境变量和当前目录
+的 `.env.local` / `.env` 仍有更高优先级。
 
 全局文件使用一个结构化值：
 
@@ -79,19 +84,27 @@ SECRET_BOOK_CONFIGS_JSON='{"schema_version":1,"active_id":"cfg_xxxxxxxxxx","conf
 
 | 用户意图 | 命令与结果 |
 |---|---|
-| 查看配置 | `config list`：只显示当前标记、cfg ID、名称、lark-cli profile |
+| 查看当前配置 / 默认配置 | `config list`：只显示当前标记、cfg ID、名称、lark-cli profile |
 | 新增配置 | `config save --name <名称> --app-token <token> --table-id <id> --lark-profile <profile>`；第一套自动成为当前配置，后续新增不切换 |
-| 切换配置 | `config use --name <名称>`：只修改本地 `active_id`，不调用 lark-cli，不修改其 active profile |
+| 切换当前配置 / 默认配置 | `config use --name <名称>`：只修改本地 `active_id`，不调用 lark-cli，不修改其 active profile |
 | 更新飞书身份 | `config rebind --name <名称> --lark-profile <profile>`：保留 cfg ID、表定位、名称和当前状态 |
 | 重命名 | `config rename --name <旧名称> --new-name <新名称>`：cfg ID 不变 |
 | 删除 | `config remove --name <名称>`；有多套时不能删除当前配置，先切换；最后一套可直接删除 |
 | 迁移/清理 v1 配置 | `config migrate --name <名称> [--lark-profile <profile>]`；旧配置缺 profile 时可用 flag 补充；混合格式填写一个现有名称以清理旧字段 |
 
-用户通过对话点名切换时，先用 `config list` 核对名称，再执行精确的
-`config use --name ...`。名称匹配不唯一或用户说法不能对应到一个名称时，列出
-候选让用户选择，禁止猜测。切换成功后报告新的当前配置。若进程环境、`.env.local`
-或 `.env` 存在更高优先级配置，命令会同时警告：全局当前配置已切换，但当前目录的
-业务命令仍使用高优先级覆盖。
+用户说“默认设置改为 xxx”“把默认配置设为 xxx”“以后默认用 xxx”或“切换当前
+配置到 xxx”，都表示切换到名称为 `xxx` 的已有令牌配置，按以下顺序执行：
+
+1. 用 `config list` 核对配置名称。不要用 `list` 代替：`list` 查询飞书令牌记录，
+   `config list` 才读取本机配置列表。
+2. 名称精确对应一套时，直接执行 `config use --name <名称>`。名称不存在或不能
+   唯一对应时，列出候选让用户选择；不要自行创建配置或切换 lark-cli 的 active profile。
+3. 成功后再次执行 `config list` 回读，报告“默认配置（当前配置）已切换为 <名称>”。
+   若命令警告进程环境、`.env.local` 或 `.env` 存在覆盖，同时说明覆盖来源和当前
+   目录的业务命令实际使用的配置层。命令失败时按实际错误反馈，不报告切换成功。
+
+切换会保留全部命名配置、表定位和身份固定值，只持久更新 `active_id`。明确的
+切换请求不需要用户再选择如何改写存储格式。
 
 旧版全局平面变量不会自动迁移。发现旧格式时，业务命令拒绝访问令牌表，并要求
 执行 `config migrate`。迁移会删除旧的五个资源字段和不具备表身份的
@@ -103,6 +116,27 @@ SECRET_BOOK_CONFIGS_JSON='{"schema_version":1,"active_id":"cfg_xxxxxxxxxx","conf
 失败时，CLI 明确报告“本地写入结果不明”，调用方必须先读取对应文件核对，禁止
 直接重放写命令。`run --bind` 在这种情况下仍返回已成功子命令的退出码，并要求先
 运行 `bindings` 核对。
+
+## 版本与配置格式不兼容时
+
+当前安装不认识 `config list/use`，或报缺配置但本机已有 `SECRET_BOOK_CONFIGS_JSON`
+时，先核查实际调用的 Skill 版本和入口，不要据此认定配置无效或不是脚本生成的。
+配置内的 `schema_version` 是配置格式版本，不等于 Skill 版本号。
+
+1. 确认当前 Agent 实际加载的 `SKILL.md` 和执行的 `scripts/secret_book.py` 的路径，
+   核对两者属于同一安装目录，并读取该安装的版本和命令帮助。同一用户的多个 Agent
+   可能使用不同安装副本，却共用 `~/.config/secret-book/.env`。
+2. 查清该安装的更新来源及可用版本，按已获授权的更新流程同步到支持现有格式的
+   版本。更新检查退出 `0` 可能只是节流、网络失败或远端没有新版，不能证明格式兼容；
+   另一份本地源码较新也不代表当前 Agent 已更新。
+3. 更新后，在目标 Agent 的新会话中用同一安装的 CLI 执行 `config list`，确认能读取
+   全部已有配置，再执行原来的 `config use --name <名称>` 并回读结果。只修改
+   `active_id` 不能让旧脚本获得读取新格式的能力。
+
+禁止为适配旧脚本把多配置 JSON 改回 v1 平面变量、只保留目标配置、把其它配置放入
+注释，或另写平面覆盖配置绕过新格式；也不要把这些做法列为普通切换选项。没有可用的
+兼容版本、安装存在未处理的修改或同步失败时，保留原配置，明确报告版本阻塞及所需
+更新操作。升级共享配置格式前，应核对共用该文件的其它已知安装也能读取新格式。
 
 ## 身份确认与运行前校验
 
@@ -156,7 +190,7 @@ scripts/secret_book.py` 前缀的可执行 `config save` 命令和已确认的 i
 1. 进程环境变量
 2. `$PWD/.env.local`
 3. `$PWD/.env`
-4. 显式传 `--use-global-config` 后的全局当前配置
+4. 显式传 `--use-global-config` 后的全局默认配置（当前配置）
 
 前三层如要覆盖全局，必须在同一层完整提供以下五个字段：
 

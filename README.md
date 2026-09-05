@@ -5,7 +5,8 @@
 查找令牌，把值注入子进程或送入剪贴板，值不会显示在终端输出中。
 
 本机可以保存多套有名称的令牌配置，例如“工作”“个人”。任何时刻只有一套
-当前配置；你可以直接在对话中说“切换到工作配置”，agent 会核对名称并持久切换。
+当前配置，也就是默认配置；你可以直接在对话中说“默认设置改为个人”或“切换到
+工作配置”，agent 会核对名称并持久切换。
 
 > 本仓库原名 `cred-ledger`，2026-08-10 更名为 `secret-book`。
 
@@ -26,8 +27,9 @@
   dotenv 键值，例如 OSS 的 AK、SK、Endpoint 和 Bucket。
 - **令牌配置**：本机访问一张令牌表所需的 `app_token`、`table_id`、lark-cli
   profile 和固定身份。全局可保存多套。
-- **当前配置**：全局多套令牌配置中唯一被选中的一套。业务命令带
-  `--use-global-config` 时使用它。
+- **当前配置 / 默认配置**：全局多套令牌配置中由 `active_id` 唯一选中的一套。
+  两者是同一个概念，在 secret-book 令牌配置语境中也称“默认设置”。业务命令带
+  `--use-global-config` 且没有进程环境或项目配置覆盖时使用它。
 
 每套令牌配置只对应一张令牌表和一个经过确认的飞书身份。切换配置不会修改
 lark-cli 的 active profile；每次访问都显式传入该配置自己的 profile。
@@ -95,11 +97,17 @@ uv run --project . scripts/secret_book.py config save \
 # 查看所有配置；不会显示表 token、table_id、appId 或 openId
 uv run --project . scripts/secret_book.py config list
 
-# 持久切换唯一的当前配置
+# 持久切换默认配置（当前配置）
 uv run --project . scripts/secret_book.py config use --name 个人
 ```
 
+“默认设置改为个人”“把默认配置设为个人”“以后默认用个人”和“切换当前配置到
+个人”都对应上面的 `config use --name 个人`。agent 先用 `config list` 核对名称，
+唯一匹配后执行切换，再回读确认；找不到名称时列出已有配置供选择。
+`config list` 查看本机配置，`list` 查询飞书令牌记录，两者用途不同。
+
 `config use` 只修改本机配置文件，不访问飞书，也不调用 `lark-cli profile use`。
+全部命名配置、表定位和身份固定值都会保留，只有 `active_id` 改为所选配置的 ID。
 当前目录若有更高优先级的项目配置，切换仍会成功，但 CLI 会明确警告该目录的业务
 命令仍使用项目配置。
 
@@ -139,7 +147,7 @@ uv run --project . scripts/secret_book.py copy \
 |---|---|---|
 | 查看 | `config list` | 显示当前标记、稳定 cfg ID、名称和 lark-cli profile |
 | 保存 | `config save --name ... --app-token ... --table-id ... --lark-profile ...` | 名称必须唯一；后续新增不改变当前配置 |
-| 切换 | `config use --name ...` | 只更新唯一的 `active_id` |
+| 切换默认配置（当前配置） | `config use --name ...` | 只更新唯一的 `active_id`，保留全部配置 |
 | 更新身份 | `config rebind --name ... --lark-profile ...` | 保留 cfg ID、表定位、名称和当前状态，重新确认并写入身份 |
 | 重命名 | `config rename --name ... --new-name ...` | 稳定 cfg ID 不变 |
 | 删除 | `config remove --name ...` | 有多套时先切走当前配置；最后一套可以直接删除 |
@@ -159,9 +167,10 @@ SECRET_BOOK_CONFIGS_JSON='{"schema_version":1,"active_id":"cfg_xxxxxxxxxx","conf
 ```
 
 脚本用文件锁和原子替换处理并发更新，最终文件权限为 `0600`。配置非空时
-`active_id` 必须指向且只指向一个配置。建议只通过 `config` 子命令修改，不要手工
-编辑这段 JSON。若文件已经替换、但目录 `fsync` 失败，CLI 会明确报告“本地写入
-结果不明”；此时先读取配置核对结果，不要直接重放写命令。
+`active_id` 必须指向且只指向一个配置，它同时决定当前配置和默认配置。建议只通过
+`config` 子命令修改，不要手工编辑这段 JSON。若文件已经替换、但目录 `fsync`
+失败，CLI 会明确报告“本地写入结果不明”；此时先读取配置核对结果，不要直接重放
+写命令。
 
 ## 配置优先级与项目覆盖
 
@@ -170,7 +179,7 @@ SECRET_BOOK_CONFIGS_JSON='{"schema_version":1,"active_id":"cfg_xxxxxxxxxx","conf
 1. 进程环境变量
 2. `$PWD/.env.local`
 3. `$PWD/.env`
-4. 仅在传入 `--use-global-config` 时，读取全局当前配置
+4. 仅在传入 `--use-global-config` 时，读取全局默认配置（当前配置）
 
 前三层如要覆盖全局，必须在同一层同时提供：
 
@@ -191,6 +200,23 @@ v1 的 `SECRET_BOOK_IDS=sec_xxx,sec_yyy` 没有记录 ID 所属的令牌表身�
 自动绑定。
 
 向 Git 工作树中的 `.env.local` 写入前，应先确认它没有被 Git 跟踪且确实被忽略。
+
+## 旧版安装无法读取多配置时
+
+同一用户的 Claude Code、Codex、WorkBuddy 等 Agent 可能各有一份 Skill 安装，
+但共用 `~/.config/secret-book/.env`。v1.2.0 只读取旧平面变量，无法读取 v2 的
+`SECRET_BOOK_CONFIGS_JSON`。配置内的 `schema_version` 是格式版本，不是 Skill
+版本；不能仅凭旧脚本报“缺少配置”，就认定该文件无效或不是脚本生成的。
+
+这时应先确认目标 Agent 实际加载的 `SKILL.md`、脚本路径、版本和更新来源，再将
+该安装同步到支持现有格式的版本。更新检查没有提示新版本，不代表当前安装已兼容；
+新版可能尚未发布，检查也可能因节流或网络问题跳过。同步后在该 Agent 的新会话中
+执行 `config list`，确认全部配置可读，再执行原来的切换命令并回读验证。
+
+切换默认配置不会要求降级配置格式。不要把多配置 JSON 改回平面变量、只保留目标
+配置、把其它配置放进注释，或另写平面覆盖来适配旧脚本；单独改 `active_id` 也不能
+让旧脚本读懂新格式。暂时无法更新时，应保留完整配置并报告版本阻塞。
+升级共享配置格式前，还应确认其它共用该文件的已知安装也支持新格式。
 
 ## 身份固定值校验
 
@@ -289,5 +315,5 @@ list/get/run/copy 中都不可见。直接在表中新增且没有 `id` 的行�
 <!-- release-table:begin -->
 | 目标 | 版本 | Release |
 |---|---|---|
-| secret-book | 2.0.0 | [v2.0.0](https://github.com/cookaihq/secret-book/releases/tag/v2.0.0) |
+| secret-book | 2.0.1 | [v2.0.1](https://github.com/cookaihq/secret-book/releases/tag/v2.0.1) |
 <!-- release-table:end -->
