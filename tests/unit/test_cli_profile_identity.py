@@ -56,10 +56,60 @@ def test_identity_problem_blocks_before_any_base_call(cli, failure, error_kind):
 
     assert result.returncode == 3
     guidance = json.loads(result.stdout)
-    assert guidance["schema_version"] == "secret-book.profile-guidance/v1"
+    assert guidance["schema_version"] == "secret-book.profile-guidance/v2"
     assert guidance["error_kind"] == error_kind
     assert guidance["configured_profile"] == "work-profile"
     assert guidance["fix_actions"]
+    if error_kind in {
+        "feishu_profile_not_found",
+        "feishu_profile_not_authenticated",
+        "feishu_identity_mismatch",
+    }:
+        split_actions = [
+            action for action in guidance["fix_actions"]
+            if action["kind"] == "auth_split_flow"
+        ]
+        assert len(split_actions) == 1
+        action = split_actions[0]
+        assert action["profile"] == (
+            "<profile-name>" if error_kind == "feishu_profile_not_found"
+            else "work-profile"
+        )
+        assert action["authorization"]["domain"] == "base"
+        assert action["authorization"]["scope_hint"] == "base"
+        assert action["start_argv_template"] == [
+            "lark-cli", "auth", "login", "--profile", action["profile"],
+            "--domain", "base", "--no-wait", "--json",
+        ]
+        assert action["resume_argv_template"] == [
+            "lark-cli", "auth", "login", "--profile", action["profile"],
+            "--device-code", "<current-device-code>", "--json",
+        ]
+        assert action["qrcode_argv_template"] == [
+            "lark-cli", "auth", "qrcode", "<verification-url>",
+            "--profile", action["profile"], "--output", "<temporary-qr-path>",
+        ]
+        assert action["status_argv"] == [
+            "lark-cli", "auth", "status", "--json", "--profile", action["profile"],
+        ]
+        assert action["request_fields"] == [
+            "verification_url", "device_code", "expires_in",
+        ]
+        assert action["renewal_policy"] == {
+            "allowed_reasons": ["expired", "revoked", "user_requested"],
+            "requires_user_confirmation": True,
+            "max_new_requests_per_task": 1,
+            "discard_previous_code_after_creation": True,
+            "context_loss": "stop_and_wait_for_explicit_reauthorization",
+        }
+        assert "<current-device-code>" in json.dumps(action, ensure_ascii=False)
+        assert "device-secret-test-123" not in json.dumps(guidance, ensure_ascii=False)
+        assert not any(
+            item["kind"] in {
+                "login_new_profile", "login_profile", "login_expected_app_profile",
+            }
+            for item in guidance["fix_actions"]
+        )
     calls = [json.loads(line) for line in cli.log_path.read_text(encoding="utf-8").splitlines()]
     assert not any(call[:1] == ["base"] for call in calls)
 

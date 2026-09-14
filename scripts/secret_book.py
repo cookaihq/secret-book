@@ -138,7 +138,7 @@ ENV_CONFIGS_JSON = "SECRET_BOOK_CONFIGS_JSON"
 
 GLOBAL_CONFIG_SCHEMA = 1
 CONFIG_IDENTITY_CONFIRMATION_SCHEMA = "secret-book.config-identity-confirmation/v1"
-PROFILE_GUIDANCE_SCHEMA = "secret-book.profile-guidance/v1"
+PROFILE_GUIDANCE_SCHEMA = "secret-book.profile-guidance/v2"
 EXIT_GUIDANCE = 3
 RESOURCE_ENV_KEYS = (
     ENV_APP_TOKEN,
@@ -180,6 +180,59 @@ class LocalWriteResultUnknown(OSError):
     """The destination was replaced, but directory durability was not confirmed."""
 
 
+def _auth_split_flow_action(profile: str, *, profile_placeholder: bool = False,
+                            description: str) -> dict:
+    """Return a machine-readable, two-step lark-cli user authorization flow.
+
+    The device code is deliberately represented only by a placeholder.  The
+    agent keeps the value in its short-lived task context between turns and
+    supplies it to the resume command after the user confirms authorization.
+    """
+    target_profile = "<profile-name>" if profile_placeholder else profile
+    return {
+        "kind": "auth_split_flow",
+        "description": description,
+        "profile": target_profile,
+        "authorization": {
+            "domain": "base",
+            "scope_hint": "base",
+            "missing_scopes_rule": (
+                "如果上游错误返回 missing_scopes，只请求其中满足本次操作的最小 scope"
+            ),
+        },
+        "start_argv_template": [
+            "lark-cli", "auth", "login", "--profile", target_profile,
+            "--domain", "base", "--no-wait", "--json",
+        ],
+        "resume_argv_template": [
+            "lark-cli", "auth", "login", "--profile", target_profile,
+            "--device-code", "<current-device-code>", "--json",
+        ],
+        "qrcode_argv_template": [
+            "lark-cli", "auth", "qrcode", "<verification-url>",
+            "--profile", target_profile, "--output", "<temporary-qr-path>",
+        ],
+        "status_argv": [
+            "lark-cli", "auth", "status", "--json", "--profile", target_profile,
+        ],
+        "request_fields": ["verification_url", "device_code", "expires_in"],
+        "device_code_policy": "只保存在当前任务短期上下文；不得写入输出、日志、配置或文件",
+        "renewal_policy": {
+            "allowed_reasons": ["expired", "revoked", "user_requested"],
+            "requires_user_confirmation": True,
+            "max_new_requests_per_task": 1,
+            "discard_previous_code_after_creation": True,
+            "context_loss": "stop_and_wait_for_explicit_reauthorization",
+        },
+        "failure_diagnostics": [
+            "执行 status_argv 检查目标 profile 的本机 user 登录状态",
+            "核对发起命令和续接命令使用相同的 profile",
+            "确认期间未调用 lark-cli profile use 或切换 CLI/profile 配置",
+            "检查 lark-cli 版本和本轮授权请求是否仍在有效期内",
+        ],
+    }
+
+
 def _profile_fix_actions(error_kind: str, profile: str, snapshot=None) -> list:
     if error_kind == "feishu_profile_list_unavailable":
         return [{
@@ -219,30 +272,28 @@ def _profile_fix_actions(error_kind: str, profile: str, snapshot=None) -> list:
                 "kind": "bind_existing_profile",
                 "description": "从 candidates 中选择正确的已登录 profile；命名配置使用上面的 config rebind",
             },
-            {
-                "kind": "login_new_profile",
-                "description": "候选都不正确时，为新 profile 完成 device flow 登录后重新保存令牌配置",
-                "argv_template": ["lark-cli", "auth", "login", "--profile", "<profile-name>"],
-            },
+            _auth_split_flow_action(
+                profile,
+                profile_placeholder=True,
+                description="候选都不正确时，为选定的新 profile 完成 split-flow 授权后重新保存令牌配置",
+            ),
         ]
     if error_kind == "feishu_profile_not_authenticated":
         return [
-            {
-                "kind": "login_profile",
-                "description": "为当前 profile 重新完成 device flow 登录后重试",
-                "argv": ["lark-cli", "auth", "login", "--profile", profile],
-            },
+            _auth_split_flow_action(
+                profile,
+                description="为当前 profile 完成 split-flow 授权后重试；网页授权完成不等于本机凭据已保存",
+            ),
             {
                 "kind": "bind_existing_profile",
                 "description": "从 candidates 中选择其它已登录 profile；命名配置使用 config rebind",
             },
         ] + rebind
     actions = rebind + [
-        {
-            "kind": "login_expected_app_profile",
-            "description": "在当前环境为配置固定的应用和用户重新登录这个 profile，然后重试",
-            "argv": ["lark-cli", "auth", "login", "--profile", profile],
-        }
+        _auth_split_flow_action(
+            profile,
+            description="在当前环境为配置固定的应用和用户完成 split-flow 授权，然后重试",
+        )
     ]
     if not rebind:
         location = "同一进程环境" if getattr(snapshot, "source", None) == "process_env" else "同一配置文件"

@@ -95,7 +95,8 @@ Skill 会定期检查远端是否有新版本，但不会自行拉取；发现�
 
 两种方式都会按相同流程执行：
 
-1. secret-book 读取所选 profile 当前登录的应用和用户身份。
+1. secret-book 读取所选 profile 当前登录的应用和用户身份。如果 profile 尚未登录，
+   Agent 按下面“提示确认身份或修复 profile”中的 split-flow 完成登录后再继续。
 2. Agent 展示 profile、`app_id`、用户名和 `open_id`，等待你确认。
 3. 确认后才创建或校验令牌表，并保存本机令牌配置。
 
@@ -198,6 +199,24 @@ printf '%s\n' 'GITHUB_TOKEN=<token>' | \
 退出码 `3` 可能表示需要确认飞书身份、修复 profile，或者 `run --auto` 没有可用
 绑定。Agent 会读取结构化提示并说明下一步；不要把它当成普通失败直接重复执行。
 
+如果结构化提示中的 `fix_actions` 含有 `kind: auth_split_flow`，登录必须分两轮完成：
+
+1. 使用动作里的 `start_argv_template`，显式传入目标 `--profile`、`--domain base`、
+   `--no-wait --json`，从 JSON 读取 `verification_url`、`device_code` 和 `expires_in`。
+2. 使用动作里的 `qrcode_argv_template` 生成临时 PNG，先向你展示原始授权 URL，再展示
+   二维码；展示完成后删除临时文件。只向你展示目标 profile、目标账号、授权范围和过期
+   信息；`device_code` 只保存在当前任务的短期运行上下文中，不写入回复、日志、配置或
+   文件。展示 URL 和二维码后结束当前轮，等待你完成网页授权。
+3. 你回复“已授权”后，Agent 使用同一 profile 和原 `device_code` 执行动作里的
+   `resume_argv_template`，不能再次执行 `--no-wait`。随后执行 `status_argv`，确认
+   本机 user 凭据已保存，再由 secret-book 校验绑定的 `app_id` 和 `open_id`。
+
+网页显示授权完成不等于本机登录成功。续接失败或出现 `device_code is invalid` 时，Agent
+   必须先检查 profile 登录状态、两条命令的 profile 是否一致、是否发生 profile 切换、
+   CLI 版本和授权请求是否过期；不能连续重试或直接生成新请求。只有原 code 明确过期、
+   被服务端作废，或你明确要求重新授权，并再次确认这次新请求后，才允许重新发起一次授权。
+   如果当前任务已经丢失原 code，Agent 必须停止并等待你明确要求重新授权。
+
 ### 写请求的结果无法确定
 
 飞书写请求遇到瞬时网络错误时不会自动重试，退出码为 `121`。这时先用 `list` 或
@@ -220,7 +239,7 @@ printf '%s\n' 'GITHUB_TOKEN=<token>' | \
 <!-- release-table:begin -->
 | 目标 | 版本 | Release |
 |---|---|---|
-| secret-book | 2.0.1 | [v2.0.1](https://github.com/cookaihq/secret-book/releases/tag/v2.0.1) |
+| secret-book | 2.1.0 | [v2.1.0](https://github.com/cookaihq/secret-book/releases/tag/v2.1.0) |
 <!-- release-table:end -->
 
 ## License

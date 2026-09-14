@@ -1,8 +1,8 @@
 ---
 name: secret-book
-version: 2.0.1
+version: 2.1.0
 description: >-
-  v2.0.1｜令牌：把 token、API key、账号密码、OSS/数据库等配置组保存到用户自己的
+  v2.1.0｜令牌：把 token、API key、账号密码、OSS/数据库等配置组保存到用户自己的
   飞书令牌表里，agent 按意图或精确 ID 查询取用，取用输出一律掩码；本机可保存多套
   有名称的令牌配置，并持久切换唯一的当前配置（默认配置）。当用户说
   "存一下这个 token/API key/密钥/凭证"、"用我存的 xx 推送/登录/调用"、"我的
@@ -168,15 +168,56 @@ SECRET_BOOK_CONFIGS_JSON='{"schema_version":1,"active_id":"cfg_xxxxxxxxxx","conf
 
 每个令牌表业务命令在 Base 调用前都会重新检查：profile 存在且已登录，实际
 `appId/openId` 与配置内固定值完全一致。失败时不访问 Base，以退出码 `3` 返回
-`secret-book.profile-guidance/v1` JSON。按其中 `config_write_target`、
-`candidates` 和 `fix_actions` 恢复：
+`secret-book.profile-guidance/v2` JSON。按其中 `config_write_target`、
+`candidates` 和 `fix_actions` 恢复。所有授权请求和续接命令都必须显式传入同一个
+目标 profile；禁止调用 `lark-cli profile use`，也不能用全局 active profile 代替配置中的
+profile。
 
 - 全局命名配置需要改绑身份时，使用 `config rebind`，再次经过两阶段确认。
 - 项目配置仅缺两个身份固定值时，先向用户展示 `observed_identity`；确认后只把
   `SECRET_BOOK_FEISHU_APP_ID`、`SECRET_BOOK_FEISHU_USER_OPEN_ID` 写回
   `config_write_target.path` 指定的同一层，禁止写到其它层补齐。
-- profile 未登录时，按 `fix_actions` 给出的 `lark-cli auth login --profile ...`
-  完成登录后重试。禁止调用 `lark-cli profile use`，它会修改全局 active profile。
+- profile 未登录或身份不匹配时，按 `fix_actions` 中 `kind` 为 `auth_split_flow` 的动作
+  完成登录后重试。这个动作的 `profile`、`start_argv_template`、
+  `resume_argv_template` 和 `status_argv` 是同一轮授权的机器可读约束；不要把它替换成
+  阻塞式裸 `auth login`。
+
+### profile 授权的 split-flow
+
+`auth_split_flow` 必须按下面的阶段推进，用户文字本身不能证明本机登录已成功：
+
+1. `AUTH_REQUEST_CREATED`：从动作的 `profile` 确定目标 profile。若该字段是
+   `<profile-name>`，先选定一个 profile 名称，并把它固定用于本轮所有命令。执行
+   `start_argv_template`，即 `lark-cli auth login --profile <profile> --domain base
+   --no-wait --json`。如果上游错误返回明确的 `missing_scopes`，只请求本次操作需要的
+   最小 scope。
+2. 从 JSON 中读取 `verification_url`、`device_code`、`expires_in`。使用动作里的
+   `qrcode_argv_template` 生成临时 PNG，输出路径必须是当前工作目录下的相对路径。按模板
+   执行命令：`lark-cli auth qrcode <verification-url> --profile <profile> --output <temporary-qr-path>`。
+   先把 verification URL 原样提供给用户，
+   再展示二维码，展示完成后删除临时文件。只向用户展示目标 profile、目标账户、授权
+   范围和过期信息；`device_code` 只保留在当前任务的短期运行上下文中，不得写入回复、
+   日志、配置、Issue、记忆或测试产物。展示 URL 和二维码后结束当前轮，等待用户回来确认。
+3. `USER_AUTHORIZED`：用户回复“已授权”时，先确认当前上下文仍有这次未消费且未过期的
+   授权请求。不得再次执行 `--no-wait`，也不得创建第二个 URL；把
+   `resume_argv_template` 中的 `<current-device-code>` 替换为原 code，执行
+   `lark-cli auth login --profile <profile> --device-code <current-device-code> --json`。
+4. `LOCAL_CREDENTIALS_CONFIRMED`：续接命令成功后，执行动作中的 `status_argv`，即
+   `lark-cli auth status --json --profile <profile>`，确认 user identity ready。仅有
+   网页显示“授权完成”不能跳过这一步。
+5. `SECRET_BOOK_IDENTITY_CONFIRMED`：再次确认配置绑定的 profile、`app_id` 和
+   `user_open_id` 与本机实际身份完全一致。
+6. `SECRET_BOOK_OPERATION_ALLOWED`：只有到达该状态，才允许执行 `list`、`get`、`run`、
+   `copy`、`save` 等令牌表操作。
+
+续接出现 `device_code is invalid` 或其它失败时，先按动作的 `failure_diagnostics` 检查
+当前 profile 登录状态、发起与续接是否使用同一 profile、期间是否发生 CLI/profile 切换、
+CLI 版本和授权请求生命周期。不得连续盲目重试，也不得立即重新生成授权请求。
+
+只有原 code 明确过期、明确被服务端作废，或用户明确要求重新授权，并且用户明确确认这次
+新的授权请求后，才允许重新执行 `start_argv_template`；同一任务最多产生一次新的请求，
+新请求创建成功后立即丢弃旧 code。当前任务上下文丢失 code 时，不得猜测、从文件读取或
+自动生成新请求；停止并说明无法安全续接，等待用户明确要求重新授权。
 
 ## 首次初始化或新增一套配置
 
