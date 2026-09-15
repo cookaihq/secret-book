@@ -1,4 +1,37 @@
 import json
+import pytest
+
+
+def test_skill_file_precedence_empty_fallback_and_isolation(cli):
+    def config(label):
+        return {
+            "SECRET_BOOK_APP_TOKEN": f"app_test_{label}",
+            "SECRET_BOOK_TABLE_ID": f"tbl_test_{label}",
+            "SECRET_BOOK_LARK_PROFILE": "work-profile",
+            "SECRET_BOOK_FEISHU_APP_ID": "cli_test_work",
+            "SECRET_BOOK_FEISHU_USER_OPEN_ID": "ou_test_work",
+        }
+
+    def write(name, values):
+        (cli.cwd / name).write_text("\n".join(f"{k}={v}" for k, v in values.items()) + "\n")
+
+    def chosen(extra_env=None):
+        cli.log_path.write_text("")
+        result = cli("list", extra_env=extra_env)
+        assert result.returncode == 0, result.stderr
+        calls = [json.loads(line) for line in cli.log_path.read_text().splitlines()]
+        return next(call for call in calls if call[:2] == ["base", "+record-list"])
+
+    write(".env.local", config("shared"))
+    write(".env.another-skill", config("other"))
+    # Parent files and files belonging to another Skill must not be selected.
+    (cli.cwd.parent / ".env.secret-book").write_text("SECRET_BOOK_APP_TOKEN=parent\n")
+    assert "app_test_shared" in chosen()
+    write(".env.secret-book", config("skill"))
+    assert "app_test_skill" in chosen()
+    assert "app_test_process" in chosen(config("process"))
+    write(".env.secret-book", {key: "" for key in config("unused")})
+    assert "app_test_shared" in chosen()
 
 
 def _save_config(cli, *, name, app_token, table_id, profile):
@@ -49,7 +82,8 @@ def test_business_command_uses_only_the_current_named_config(cli):
     assert "tbl_test_work" not in rendered_calls
 
 
-def test_project_resource_config_is_atomic_and_overrides_global_current(cli):
+@pytest.mark.parametrize("filename", [".env.local", ".env.secret-book"])
+def test_project_resource_config_is_atomic_and_overrides_global_current(cli, filename):
     _save_config(
         cli,
         name="工作",
@@ -64,14 +98,14 @@ def test_project_resource_config_is_atomic_and_overrides_global_current(cli):
         table_id="tbl_test_personal",
         profile="personal-profile",
     )
-    project_env = cli.cwd / ".env.local"
+    project_env = cli.cwd / filename
     project_env.write_text("SECRET_BOOK_APP_TOKEN=app_test_project\n", encoding="utf-8")
     cli.log_path.write_text("", encoding="utf-8")
 
     incomplete = cli("list", "--use-global-config")
 
     assert incomplete.returncode == 1
-    assert ".env.local 中的令牌配置不完整" in incomplete.stderr
+    assert f"{filename} 中的令牌配置不完整" in incomplete.stderr
     assert "五个字段必须来自同一层" in incomplete.stderr
     assert cli.log_path.read_text(encoding="utf-8") == ""
 
@@ -97,5 +131,5 @@ def test_project_resource_config_is_atomic_and_overrides_global_current(cli):
     assert "tbl_test_project" in base_call
     assert "app_test_work" not in json.dumps(calls)
     assert switched.returncode == 0, switched.stderr
-    assert "当前目录的 .env.local 定义了令牌配置" in switched.stderr
+    assert f"当前目录的 {filename} 定义了令牌配置" in switched.stderr
     assert "业务命令仍会优先使用项目配置" in switched.stderr

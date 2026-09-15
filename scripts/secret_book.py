@@ -312,6 +312,7 @@ def _guidance_write_target(snapshot, keys=None) -> dict:
             target["keys"] = keys
         return target
     source_paths = {
+        ".env.secret-book": Path.cwd() / ".env.secret-book",
         ".env.local": Path.cwd() / ".env.local",
         ".env": Path.cwd() / ".env",
         "global_current": global_config_path(),
@@ -606,6 +607,7 @@ def _config_layers(use_global: bool) -> tuple[list, dict]:
     env = {key: os.environ.get(key, "") for key in (*RESOURCE_ENV_KEYS, ENV_IDS)}
     layers = [
         ("process_env", env),
+        (".env.secret-book", _parse_env_file(Path.cwd() / ".env.secret-book")),
         (".env.local", _parse_env_file(Path.cwd() / ".env.local")),
         (".env", _parse_env_file(Path.cwd() / ".env")),
     ]
@@ -686,6 +688,7 @@ def _snapshot_for_args(args) -> ConfigSnapshot:
 def _higher_priority_resource_source() -> str:
     layers = [
         ("进程环境变量", {key: os.environ.get(key, "") for key in RESOURCE_ENV_KEYS}),
+        ("当前目录的 .env.secret-book", _parse_env_file(Path.cwd() / ".env.secret-book")),
         ("当前目录的 .env.local", _parse_env_file(Path.cwd() / ".env.local")),
         ("当前目录的 .env", _parse_env_file(Path.cwd() / ".env")),
     ]

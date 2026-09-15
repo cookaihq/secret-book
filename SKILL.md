@@ -1,8 +1,8 @@
 ---
 name: secret-book
-version: 2.1.0
+version: 2.2.0
 description: >-
-  v2.1.0｜令牌：把 token、API key、账号密码、OSS/数据库等配置组保存到用户自己的
+  v2.2.0｜令牌：把 token、API key、账号密码、OSS/数据库等配置组保存到用户自己的
   飞书令牌表里，agent 按意图或精确 ID 查询取用，取用输出一律掩码；本机可保存多套
   有名称的令牌配置，并持久切换唯一的当前配置（默认配置）。当用户说
   "存一下这个 token/API key/密钥/凭证"、"用我存的 xx 推送/登录/调用"、"我的
@@ -69,7 +69,7 @@ skill 自带的 uv 项目。
 也指这套配置。三种说法都对应 `SECRET_BOOK_CONFIGS_JSON.active_id` 选中的同一项，
 没有第二个默认项；`config list` 的“当前配置”标记就是默认配置标记。
 业务命令只有显式带 `--use-global-config` 才会启用这一层，进程环境变量和当前目录
-的 `.env.local` / `.env` 仍有更高优先级。
+的 `.env.secret-book` / `.env.local` / `.env` 仍有更高优先级。
 
 全局文件使用一个结构化值：
 
@@ -103,7 +103,7 @@ SECRET_BOOK_CONFIGS_JSON='{"schema_version":1,"active_id":"cfg_xxxxxxxxxx","conf
 3. 成功后再次执行 `config list` 回读，核对“是”所在行的 cfg ID 和名称，报告
    “默认配置（当前配置）：<名称>”。若执行前已经是目标配置，报告“默认配置
    （当前配置）已经是 <名称>”；不要虚构“之前是另一套配置”。
-   若命令警告进程环境、`.env.local` 或 `.env` 存在覆盖，同时说明覆盖来源和当前
+   若命令警告进程环境、`.env.secret-book`、`.env.local` 或 `.env` 存在覆盖，同时说明覆盖来源和当前
    目录的业务命令实际使用的配置层。命令失败时按实际错误反馈，不报告切换成功。
 
 切换会保留全部命名配置、表定位和身份固定值，只持久更新 `active_id`。明确的
@@ -243,11 +243,12 @@ scripts/secret_book.py` 前缀的可执行 `config save` 命令和已确认的 i
 业务命令每次只解析一次不可变配置快照。资源配置按整套选择：
 
 1. 进程环境变量
-2. `$PWD/.env.local`
-3. `$PWD/.env`
-4. 显式传 `--use-global-config` 后的全局默认配置（当前配置）
+2. `$PWD/.env.secret-book`
+3. `$PWD/.env.local`
+4. `$PWD/.env`
+5. 显式传 `--use-global-config` 后的全局默认配置（当前配置）
 
-前三层如要覆盖全局，必须在同一层完整提供以下五个字段：
+前四层如要覆盖全局，必须在同一层完整提供以下五个字段：
 
 ```text
 SECRET_BOOK_APP_TOKEN

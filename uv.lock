@@ -99,7 +99,7 @@ wheels = [
 
 [[package]]
 name = "secret-book"
-version = "2.1.0"
+version = "2.2.0"
 source = { virtual = "." }
 
 [package.dev-dependencies]

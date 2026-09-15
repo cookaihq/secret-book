@@ -230,7 +230,7 @@ printf '%s\n' 'GITHUB_TOKEN=<token>' | \
 
 ### 项目需要使用另一张令牌表
 
-业务命令按以下顺序选择第一套完整配置：进程环境变量、当前目录的 `.env.local`、
+业务命令按以下顺序选择第一套完整配置：进程环境变量、当前目录的 `.env.secret-book`、`.env.local`、
 当前目录的 `.env`，最后才是在显式使用 `--use-global-config` 时读取全局当前配置。
 项目配置必须在同一层提供完整的表定位、profile 和身份字段，不能跨层拼接。
 
@@ -239,7 +239,7 @@ printf '%s\n' 'GITHUB_TOKEN=<token>' | \
 <!-- release-table:begin -->
 | 目标 | 版本 | Release |
 |---|---|---|
-| secret-book | 2.1.0 | [v2.1.0](https://github.com/cookaihq/secret-book/releases/tag/v2.1.0) |
+| secret-book | 2.2.0 | [v2.2.0](https://github.com/cookaihq/secret-book/releases/tag/v2.2.0) |
 <!-- release-table:end -->
 
 ## License

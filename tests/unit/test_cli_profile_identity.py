@@ -119,8 +119,9 @@ def test_identity_problem_blocks_before_any_base_call(cli, failure, error_kind):
     "SECRET_BOOK_FEISHU_APP_ID=cli_test_work\n",
     "SECRET_BOOK_FEISHU_USER_OPEN_ID=ou_test_work\n",
 ])
-def test_project_config_missing_identity_values_returns_same_layer_guidance(cli, identity_lines):
-    project_env = cli.cwd / ".env.local"
+@pytest.mark.parametrize("filename", [".env.local", ".env.secret-book"])
+def test_project_config_missing_identity_values_returns_same_layer_guidance(cli, identity_lines, filename):
+    project_env = cli.cwd / filename
     project_env.write_text(
         "SECRET_BOOK_APP_TOKEN=app_test_project\n"
         "SECRET_BOOK_TABLE_ID=tbl_test_project\n"
@@ -138,7 +139,7 @@ def test_project_config_missing_identity_values_returns_same_layer_guidance(cli,
     assert guidance["observed_identity"]["open_id"] == "ou_test_work"
     assert guidance["confirmation_token"]
     assert guidance["config_write_target"] == {
-        "source": ".env.local",
+        "source": filename,
         "path": str(project_env),
         "config_id": None,
         "config_name": None,
