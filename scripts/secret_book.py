@@ -680,7 +680,19 @@ def resolve_config_snapshot(use_global: bool) -> ConfigSnapshot:
 def _snapshot_for_args(args) -> ConfigSnapshot:
     snapshot = getattr(args, "_config_snapshot", None)
     if snapshot is None:
-        snapshot = resolve_config_snapshot(args.use_global_config)
+        if getattr(args, "config_name", None):
+            store = _load_named_config_store(_parse_env_file(global_config_path()))
+            matches = [(cid, record) for cid, record in store["configs"].items()
+                       if record["name"] == args.config_name]
+            if len(matches) != 1:
+                die("--config-name 必须精确对应一套已有令牌配置；先用 config list 核对")
+            cid, record = matches[0]
+            snapshot = ConfigSnapshot(
+                record["app_token"], record["table_id"], record["lark_profile"],
+                record["feishu_app_id"], record["feishu_user_open_id"], (),
+                "global_current", cid, record["name"])
+        else:
+            snapshot = resolve_config_snapshot(args.use_global_config)
         args._config_snapshot = snapshot
     return snapshot
 
@@ -1620,6 +1632,10 @@ def cmd_get(args) -> None:
 
 
 def cmd_run(args) -> None:
+    if args.requirements:
+        die("run --requirements 已移除：用 configure 预览并保存本机配置，再直接运行调用者；仅临时使用时显式 run --id")
+    if args.skill:
+        die("--skill 需要同时提供 --requirements")
     if not args.command:
         die("run 需要 '-- <命令>'")
     if args.auto and (args.name or args.id):
@@ -1879,155 +1895,18 @@ def cmd_init_adopt(args) -> None:
     print(_config_save_handoff(app_token, table_id, profile, confirmation))
 
 
-# ---------- agent-rule（多 Agent 全局指令文件的兜底规则块）----------
-
-# v3（2026-09-03）：自动绑定加入令牌表身份，unbind 必须选择全局当前配置的命名空间。
-# 递增版本号是必须的——不递增的话已安装 v1 的文件会被判成「手工改动」而跳过更新。
-RULE_VERSION = 3
-RULE_BEGIN = re.compile(r"<!-- secret-book:fallback-rule v(\d+) -->")
-RULE_END = "<!-- /secret-book:fallback-rule -->"
-
-# (key, 名称, 检测目录, 目标文件, 模式)。模式 block=共享文件里追加哨兵块；
-# file=独立文件整份归本 skill；manual=无全局文件（不可脚本写入），输出手动指引。
-# 各路径均经官方文档逐家查证，来源清单见外层仓
-# docs/deliverables/secret-book/agent-rule-and-bindings.md（2026-08-10）。
-AGENT_TARGETS = [
-    ("claude-code", "Claude Code", "~/.claude", "~/.claude/CLAUDE.md", "block"),
-    ("codex", "Codex CLI", "~/.codex", "~/.codex/AGENTS.md", "block"),
-    ("gemini", "Gemini CLI", "~/.gemini", "~/.gemini/GEMINI.md", "block"),
-    ("opencode", "OpenCode", "~/.config/opencode", "~/.config/opencode/AGENTS.md", "block"),
-    ("qwen", "Qwen Code", "~/.qwen", "~/.qwen/QWEN.md", "block"),
-    ("iflow", "iFlow CLI", "~/.iflow", "~/.iflow/IFLOW.md", "block"),
-    ("amp", "Amp", "~/.config/amp", "~/.config/amp/AGENTS.md", "block"),
-    ("windsurf", "Windsurf", "~/.codeium/windsurf",
-     "~/.codeium/windsurf/memories/global_rules.md", "block"),
-    ("cline", "Cline", "~/Documents/Cline", "~/Documents/Cline/Rules/secret-book.md", "file"),
-    ("copilot", "Copilot CLI", "~/.copilot",
-     "~/.copilot/instructions/secret-book.instructions.md", "file"),
-    ("goose", "Goose", "~/.config/goose", "~/.config/goose/AGENTS.md", "block"),
-    ("cursor", "Cursor", "~/.cursor", None, "manual"),
-]
-WINDSURF_CHAR_LIMIT = 6000  # global_rules.md 官方字符上限
-
-
-def _is_inside_worktree(path: str) -> bool:
-    """路径是否落在 `<repo>/.worktrees/<name>/` 这类临时检出里。
-
-    判据只看路径分量里有没有 `.worktrees`——这是本工作区 worktree 的固定落点
-    （见工作区 CLAUDE.md「Worktree 创建已由 WorktreeCreate hook 接管」）。粗，
-    但足够：装规则是低频的一次性动作，宁可在极少数同名目录上多问一句，也不能
-    把随时会被删除的路径写进各 agent 的**全局**指令文件。
-    """
-    return ".worktrees" in os.path.realpath(path).split(os.sep)
-
-
-def rule_block() -> str:
-    # realpath：入口通常是 ~/.claude/skills/secret-book 这类 symlink，解析到实体
-    # 才是各 agent 长期可用的稳定路径。
-    script = os.path.realpath(__file__)
-    project = os.path.dirname(os.path.dirname(script))  # pyproject.toml 所在目录
-    # shlex.quote：路径含空格或 shell 元字符时，规则块里的命令会被 agent 原样
-    # 复制执行，未引用的 `--project /Users/me/My Skills/secret-book` 会被切成两个
-    # 参数（与 bootstrap 的 _bootstrap_manual_hint 同一条理由）。安全路径下
-    # quote 原样返回，已装好的规则块文本不受影响，因此不需要 bump RULE_VERSION。
-    run = f"uv run --project {shlex.quote(project)} {shlex.quote(script)}"
-    return f"""<!-- secret-book:fallback-rule v{RULE_VERSION} -->
-## secret-book 令牌兜底
-命令或 skill 因缺少令牌/API key/token/凭证配置而失败时：
-1. 先试 `{run} run --auto --use-global-config -- <原命令>`；命中绑定即注入重试，退出码 3 = 无绑定。
-2. 无绑定则 `{run} list --use-global-config` 查元数据按意图匹配：唯一命中 → `run --id <id> --bind --use-global-config -- <原命令>`（成功自动记住绑定）；多条候选或无命中 → 列给用户选择，禁止自选。
-3. 注入后仍鉴权失败 → `unbind --command <命令名> --use-global-config` 解除当前令牌配置下的绑定后重新匹配，禁止重试同一绑定。
-4. MCP server 缺配置无法注入已运行进程：用 `copy` 取值引导用户配置后重启会话。令牌值一律不上屏。
-{RULE_END}"""
-
-
-def _inspect_target(text: str) -> tuple[str, tuple[int, int] | None]:
-    """返回 (状态, 规则块在文本中的位置)。状态：missing/current/outdated/modified。"""
-    m = RULE_BEGIN.search(text)
-    if not m:
-        return "missing", None
-    end = text.find(RULE_END, m.start())
-    if end < 0:  # 起始哨兵在、结束哨兵丢了：按手工改动处理，不自动覆盖
-        return "modified", (m.start(), len(text))
-    span = (m.start(), end + len(RULE_END))
-    if int(m.group(1)) < RULE_VERSION:
-        return "outdated", span
-    return ("current" if text[span[0]:span[1]] == rule_block() else "modified"), span
-
+# ---------- agent-rule（当前调用 Agent 的规则检查与显式维护）----------
 
 def cmd_agent_rule(args) -> None:
-    only = set(args.agent or [])
-    known = {k for k, *_ in AGENT_TARGETS}
-    if only - known:
-        die(f"未知 agent key：{', '.join(sorted(only - known))}（可用：{', '.join(sorted(known))}）")
-    action = "install" if args.install else ("remove" if args.remove else "check")
-    # 规则块里写的是本脚本的绝对路径，会被装进各 agent 的**全局**指令文件、长期
-    # 生效。从 worktree 里装，写进去的就是一条 worktree 删除后即失效的路径——
-    # 症状是"以后每次缺令牌兜底都报文件不存在"，且发生在别的会话里，没人会联想
-    # 到当初是在哪装的。因此安装一律拒绝，让用户回主检出执行；check / remove 不
-    # 写路径，只提醒（check 还会因路径不同把已装的块误报成 modified）。
-    if _is_inside_worktree(__file__):
-        hint = ("当前脚本在 worktree 检出内运行"
-                f"（{os.path.realpath(__file__)}）。规则块会把这个路径写进各 agent "
-                "的全局指令文件，worktree 一删就永久失效。")
-        if action == "install":
-            die(hint + "请到主检出（非 .worktrees/ 下）再执行 agent-rule --install")
-        warn(hint + "下方状态仅供参考：路径不同会把已装好的规则块显示成 modified")
-    for key, label, detect, target, mode in AGENT_TARGETS:
-        if only and key not in only:
-            continue
-        tag = f"{key:12} {label:12}"
-        if not Path(detect).expanduser().is_dir():
-            print(f"{tag} 未检测到（{detect} 不存在），跳过")
-            continue
-        if mode == "manual":
-            if action == "install":
-                print(f"{tag} 无全局指令文件（User Rules 存 IDE 设置内），"
-                      "请手动把下面的规则粘贴进 Cursor Settings → Rules：")
-                print(rule_block())
-            else:
-                print(f"{tag} 无全局指令文件，不可脚本写入（如已手动粘贴请手动维护）")
-            continue
-        path = Path(target).expanduser()
-        text = path.read_text(encoding="utf-8") if path.is_file() else ""
-        status, span = _inspect_target(text)
-        if action == "check":
-            print(f"{tag} {status:9} {path}")
-            continue
-        if action == "remove":
-            if status == "missing":
-                print(f"{tag} 本就未安装，跳过")
-                continue
-            remaining = (text[:span[0]] + text[span[1]:]).strip("\n")
-            if mode == "file" and not remaining.strip():
-                path.unlink()
-                print(f"{tag} 已删除 {path}")
-            else:
-                path.write_text(remaining + ("\n" if remaining else ""), encoding="utf-8")
-                print(f"{tag} 已移除规则块：{path}")
-            continue
-        # install
-        if status == "current":
-            print(f"{tag} 已是最新，跳过")
-            continue
-        if status == "modified" and not args.force:
-            print(f"{tag} 规则块有手工改动，跳过（--force 覆盖）：{path}")
-            continue
-        block = rule_block()
-        if span:
-            new_text = text[:span[0]] + block + text[span[1]:]
-        else:
-            new_text = (text.rstrip("\n") + "\n\n" if text.strip() else "") + block + "\n"
-        if key == "windsurf" and len(new_text) > WINDSURF_CHAR_LIMIT:
-            print(f"{tag} 跳过：写入后 {len(new_text)} 字符超过 {WINDSURF_CHAR_LIMIT} 上限，"
-                  f"请手工精简 {path} 后重试")
-            continue
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(new_text, encoding="utf-8")
-        print(f"{tag} {'已安装' if status == 'missing' else '已更新'}：{path}")
+    from agent_rules import command
+    command(sys.modules[__name__], args)
 
 
 # ---------- CLI ----------
+
+def cmd_consumer(args) -> None:
+    from consumers import dispatch
+    dispatch(sys.modules[__name__], args)
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog=SKILL_NAME, description=__doc__,
@@ -2044,7 +1923,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     def common(sp, with_lookup: bool = False):
         sp.add_argument("--use-global-config", action="store_true",
-                        help=f"启用第 4 层配置 {global_config_path()}（ADR 0003 要求显式 flag）")
+                        help=f"启用全局当前配置层 {global_config_path()}")
+        sp.add_argument("--config-name", help="明确选择完整的全局命名配置；不修改默认项，不混合项目覆盖")
         if with_lookup:
             sp.add_argument("--name", help="按令牌记录名称定位")
             sp.add_argument("--id", action="append", help="按机器键 sec_xxx 定位记录，可重复")
@@ -2120,6 +2000,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("run", help="键值对注入子进程环境后执行命令")
     common(sp, with_lookup=True)
+    sp.add_argument("--requirements", help="旧开发接口，拒绝执行并提示迁移到 configure")
+    sp.add_argument("--skill", help="当前调用的 Plugin 子 Skill")
     sp.add_argument("--auto", action="store_true",
                     help="按 (项目根, 命令名) 查历史绑定注入；无绑定退出码 3")
     sp.add_argument("--bind", action="store_true",
@@ -2127,6 +2009,26 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("command", nargs=argparse.REMAINDER,
                     help="'-- <命令及参数>'")
     sp.set_defaults(func=cmd_run)
+
+    sp = sub.add_parser("configure-status", help="查看业务配置写入记录和待确认请求；不访问飞书")
+    sp.add_argument("--requirements", required=True)
+    sp.set_defaults(func=cmd_consumer)
+
+    sp = sub.add_parser("configure", help="预览或确认把令牌表字段写入调用者实际使用的本机配置")
+    sp.add_argument("--requirements", required=True, help="业务配置声明 JSON")
+    sp.add_argument("--inspection", required=True, help="由调用者配置检查入口生成的不含值的来源报告 JSON")
+    sp.add_argument("--key", action="append", required=True, help="本次新增或修复的业务字段，可重复")
+    sp.add_argument("--scope", choices=("project", "global"), help="仅用于新增字段；修复已有字段始终写回原文件")
+    sp.add_argument("--skill-only", action="store_true", help="新增 Plugin 全局字段保存到 .env.<当前Skill>")
+    sp.add_argument("--id", action="append", required=True, help="用户选择的令牌记录 ID")
+    sp.add_argument("--map", action="append", help="明确的 TARGET=SOURCE 键名映射")
+    sp.add_argument("--confirm", help="用户确认完整摘要后传入其 token")
+    sp.add_argument("--agent", required=True, help="当前调用 Agent；来自实际上下文，不能按目录推测")
+    sp.add_argument("--agent-config-dir", help="宿主实际使用的配置目录")
+    sp.add_argument("--agent-workspace", help="OpenClaw 实际使用的 workspace")
+    sp.add_argument("--agent-id", help="OpenClaw 当前 agent ID")
+    common(sp)
+    sp.set_defaults(func=cmd_consumer)
 
     sp = sub.add_parser("bindings", help="列出全部自动绑定（bindings.json）")
     sp.set_defaults(func=cmd_bindings)
@@ -2149,7 +2051,12 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--install", action="store_true")
     g.add_argument("--remove", action="store_true")
     sp.add_argument("--agent", action="append", help="只处理指定 agent key，可重复")
-    sp.add_argument("--force", action="store_true", help="覆盖有手工改动的规则块")
+    sp.add_argument("--force", action="store_true", help="在用户明确批准后覆盖有手工改动的受管理规则块")
+    sp.add_argument("--all", action="store_true", help="显式只读盘点全部已支持 Agent；不推断当前 Agent")
+    sp.add_argument("--cwd", help="当前任务工作目录，默认为调用目录")
+    sp.add_argument("--config-dir", help="宿主实际配置目录")
+    sp.add_argument("--workspace", help="OpenClaw 已解析的实际 workspace")
+    sp.add_argument("--agent-id", help="OpenClaw 当前 agent ID")
     sp.set_defaults(func=cmd_agent_rule)
 
     sp = sub.add_parser("copy", help="单个值写入剪贴板（多键记录需 --key）")

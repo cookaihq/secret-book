@@ -1,18 +1,17 @@
 ---
 name: secret-book
-version: 2.2.0
+version: 2.3.0
 description: >-
-  v2.2.0｜令牌：把 token、API key、账号密码、OSS/数据库等配置组保存到用户自己的
+  v2.3.0｜令牌：把 token、API key、账号密码、OSS/数据库等配置组保存到用户自己的
   飞书令牌表里，agent 按意图或精确 ID 查询取用，取用输出一律掩码；本机可保存多套
   有名称的令牌配置，并持久切换唯一的当前配置（默认配置）。当用户说
   "存一下这个 token/API key/密钥/凭证"、"用我存的 xx 推送/登录/调用"、"我的
   OSS/数据库配置"、"切换到工作配置"、"查看当前配置/默认配置"、"默认设置改为个人"、
   "令牌/secret book"，或遇到 secret-book 安装版本与配置格式不兼容，
-  或任何命令、skill、工具因缺少 API key/token/凭证配置而失败、需要查令牌表兜底
-  注入时使用。Credential
+  或命令、Skill、Plugin 缺少配置或配置被拒绝，用户选择从表中取用并保存/修复本机配置时使用。Credential
   storage in the user's own Feishu Bitable: save/list/run/copy tokens, API keys,
   logins and config groups; stores multiple named local configurations with one
-  active (default) configuration; remembers per-(token-table, project, command) bindings.
+  active (default) configuration; confirms field mappings and writes consumer configuration to the effective local files; also supports explicit temporary injection.
   Requires lark-cli logged in. Do NOT use for encrypted vault needs: this skill
   stores plaintext; point users to a real password manager for high-value secrets.
 compatibility: 需要 macOS 或 Linux、已安装并登录 lark-cli（user 身份）、uv >= 0.8（脚本运行时由 uv 管理，首次运行自动建 .venv）、可访问飞书开放平台的网络；当前不支持 Windows；Claude Code 与 Codex 双端可用
@@ -29,9 +28,8 @@ compatibility: 需要 macOS 或 Linux、已安装并登录 lark-cli（user 身�
 - 只建议保存可随时轮换的中低价值令牌；令牌表权限建议收紧到仅本人。高价值
   令牌应使用 1Password 等专业密码管理器。
 - 禁止用 lark-cli 直接读取 `secret` 列，禁止打印或在回复中写出明文令牌值。
-  值只能经脚本进入子进程环境（`run`）或剪贴板（`copy`）。若目标工具需要
-  持久配置，可用 `run` 包装写文件命令；目标同时支持项目和全局配置时，先问
-  用户写哪个作用域。写入 Git 工作树前，必须确认目标文件未被跟踪且已被忽略。
+  正常配置通过 `configure` 从脚本内存写入已确认文件；仅本轮等例外使用 `run`，
+  手工粘贴使用 `copy`。禁止用 `run` 包装任意写文件命令绕过来源、确认和 Git 检查。
 - 用户让 agent 在浏览器中自动填写令牌时，值会进入会话记录；执行前明确告知。
 
 ## 第 0 步：自动检查更新
@@ -61,6 +59,29 @@ uv run --project "$SKILL_DIR" "$SKILL_DIR/scripts/secret_book.py" <action> [flag
 禁止把示例改成裸 `python3`。脚本虽有运行时 bootstrap，调用方仍必须显式使用
 skill 自带的 uv 项目。
 
+## 使用前检查当前 Agent 规则
+
+自动检查更新后，按当前会话确定宿主，运行 `agent-rule --agent <当前Agent>` 只读检查。
+不能以配置目录存在推断宿主。核对已有 secret-book 说明、旧自动注入规则、项目覆盖、
+禁用与 symlink 共用实体；脚本标记手工规则或未知加载状态时继续审查。
+检查不授权修改全局规则，规则文件不保存业务密钥。具体入口、状态、安装授权及宿主
+限制见 [Agent 规则检查](references/agent-rules.md)。
+
+## 为其他 Skill / Plugin 配置凭证
+
+用户选择 secret-book 后，先读 [业务配置流程](references/consumer-setup.md)。业务方提供
+真实配置声明、自己的来源检查入口和错误依据；本 Skill 负责自身初始化、身份和表、
+候选记录、实际 key→业务字段映射、目标文件确认以及写入回读。
+
+能持久保存时优先建议写入本机。修复已有错误必须写回实际生效的原文件/原字段，
+不能另写全局文件掩盖高优先级错误；环境变量先定位启动/注入来源。首次新增沿用既定
+位置，无决定才建议个人全局。`configure` 先预览，再凭用户确认的 token 写入；
+`configure-status` 可恢复待确认请求。写完让业务方直接读自己的配置并验证，正常运行
+不访问 secret-book，不自动同步表中轮换。值不进入聊天、argv 或规则文件。
+
+用户选择手填文件时不查表，也不要求安装 secret-book。`run --requirements` 已移除；
+旧命令绑定只用于用户明确的临时取用场景，不能推断成 Plugin 配置。
+
 ## 本地令牌配置
 
 一套令牌配置负责定位一张飞书令牌表，并固定访问该表时允许使用的飞书身份。
@@ -68,8 +89,9 @@ skill 自带的 uv 项目。
 一套“当前配置”，它就是“默认配置”。在 secret-book 令牌配置语境中，“默认设置”
 也指这套配置。三种说法都对应 `SECRET_BOOK_CONFIGS_JSON.active_id` 选中的同一项，
 没有第二个默认项；`config list` 的“当前配置”标记就是默认配置标记。
-业务命令只有显式带 `--use-global-config` 才会启用这一层，进程环境变量和当前目录
+按当前配置查表的命令只有显式带 `--use-global-config` 才会启用这一层；进程环境变量和当前目录
 的 `.env.secret-book` / `.env.local` / `.env` 仍有更高优先级。
+也可用 `--config-name <名称>` 明确选择一套完整的全局命名配置，跳过进程和项目来源，不改变当前项。
 
 全局文件使用一个结构化值：
 
@@ -113,12 +135,15 @@ SECRET_BOOK_CONFIGS_JSON='{"schema_version":1,"active_id":"cfg_xxxxxxxxxx","conf
 后续取用方式时，按具体命令说明，不将其它命令的行为类推过来：
 
 - `config list/use` 直接管理全局配置文件，不需要也不接受 `--use-global-config`。
-- `list/get/save/run/copy` 读取全局默认配置时，必须显式带 `--use-global-config`。
+- `list/get/save/copy` 与旧 `run --id/--name/--auto` 读取全局默认配置时，必须显式带 `--use-global-config`。
   不带 flag 时，即使进程和项目都没有配置，也不会回退到全局默认配置。
+- `list/get/save/copy/configure` 与旧 `run` 可用 `--config-name <名称>` 直接选择完整命名配置；不修改当前项，不与进程/项目字段拼接。该显式选择不需要 `--use-global-config`。
 - `bindings` 只读取本地 `bindings.json`，不解析令牌配置，不接受这个 flag，也不
   访问飞书令牌表。
 - `unbind` 按全局默认配置选择绑定时需要这个 flag；指定 `--namespace` 或
   `--legacy` 时不解析令牌配置。它只删除本地绑定，不发起令牌表请求。
+
+`configure` 与普通查表命令使用相同的表选择规则；业务文件写入后独立使用，不再保留运行时表绑定。具体流程见 [业务配置流程](references/consumer-setup.md)。
 
 旧版全局平面变量不会自动迁移。发现旧格式时，业务命令拒绝访问令牌表，并要求
 执行 `config migrate`。迁移会删除旧的五个资源字段和不具备表身份的
@@ -240,7 +265,7 @@ scripts/secret_book.py` 前缀的可执行 `config save` 命令和已确认的 i
 
 ## 配置读取优先级
 
-业务命令每次只解析一次不可变配置快照。资源配置按整套选择：
+查表命令及 `configure` 每次只解析一次不可变配置快照。资源配置按整套选择：
 
 1. 进程环境变量
 2. `$PWD/.env.secret-book`
@@ -307,20 +332,17 @@ SHA-256；`bindings.json` 只保存哈希和其它元数据，不保存这四个
 删除旧 namespace：其它全局配置或项目覆盖仍可能使用它；新配置不会命中旧条目，
 确认不再使用后再显式清理。
 
-## 缺配置兜底硬规则
+## 缺配置或配置被拒绝时
 
-任何命令或 skill 因缺少 API key、token 或账号配置而失败时：
+先让调用者报告字段、实际来源和证据，区分配置问题与网络、余额、权限、限流等错误。
+提供“修改本机配置 / 从 secret-book 选择配置修复”，已有明确选择则沿用。选择手填时
+不查表。选择 secret-book 时按 [业务配置流程](references/consumer-setup.md) 准备版本、
+飞书身份和令牌表；新用户可以中途改为手填，无记录或缺项时让其在自己的表或文件中填写。
 
-1. 运行 `run --auto --use-global-config -- <原命令>`。命中即注入并重试；退出码
-   `3` 且不是结构化身份 JSON时，进入下一步。
-2. 运行 `list --use-global-config`，按 name/service/account/purpose 与用户意图
-   匹配。唯一命中时执行
-   `run --id <id> --bind --use-global-config -- <原命令>`；多条候选或无命中时
-   列给用户选择，禁止自行选取。无记录且用户提供值时，询问是否用 `save` 保存。
-3. 注入后仍出现鉴权失败，立即运行
-   `unbind --command <命令名> --use-global-config`，再重新匹配。禁止用同一绑定重试。
-4. MCP server 已在会话启动时运行，不能向其进程补注环境变量。用 `copy` 让用户
-   配置并重启会话；目标支持多个配置作用域时先问具体作用域。令牌值不得上屏。
+展示真实记录/账号、表中 key、映射、准确写入文件和替换项，唯一候选首次也确认。
+修复原来源；新增才决定保存位置。业务配置可持久保存时，不把每次 `run` 取值当作默认。
+MCP 等已经读取旧配置的进程按其机制重新加载或重启，业务方再检查实际来源；保存成功
+不等于鉴权成功，也不授权重发原业务任务。
 
 ## 网络失败与退出码
 
@@ -332,22 +354,18 @@ SHA-256；`bindings.json` 只保存哈希和其它元数据，不保存这四个
 |---|---|
 | `0` | CLI 动作成功，或被包装命令成功 |
 | `1` | 参数、配置、数据或确定性外部调用错误 |
-| `3` | stdout 是身份确认/修复 JSON，或 `run --auto` 没有可用绑定；必须检查 stdout 再决定下一步 |
+| `3` | stdout 是身份或业务接入的确认/修复 JSON，或旧 `run --auto` 没有可用绑定；按 schema/status 判断，不把待确认当成执行成功 |
 | `121` | 写请求遇到瞬时失败，结果可能已生效，禁止盲目重试 |
 | 其它 | `run` 透传被包装命令的退出码 |
 
 ## agent-rule
 
-`agent-rule` 检测各 agent 的全局指令文件；`agent-rule --install` 安装上面的兜底
-规则，`--remove` 精确移除。规则块当前为 v3。
-
-安装会修改用户全局文件。执行 `--install` 前，必须展示目标文件清单和规则全文，
-取得明确确认。检测到用户手改的块时默认跳过，只有用户确认覆盖后才用 `--force`。
-Cursor 没有可写的全局规则文件，CLI 只打印内容供用户手动配置。禁止从临时
-worktree 安装全局规则；使用稳定 skill 检出路径。
+规则块当前为 v5，主流程见 [Agent 规则检查](references/agent-rules.md)。
+`agent-rule --agent <当前Agent>` 只读；`--all` 仅显式盘点。`--install` / `--remove`
+必须指定 Agent，并按用户明确的规则修改授权操作。先展示路径和完整规则；手工修改
+默认不覆盖。写入不含开发 worktree 路径，真实会话加载仍需宿主验证。
 
 ## 边界（v2 非目标）
 
-不做：加密、`export` 明文落盘、原生多行值、跨多张令牌表聚合查询、单条业务命令
-临时选择非当前配置、自动按项目切换全局当前配置、agent 自动填表专用接口、
+不做：加密、通用明文导出（仅支持已确认的业务配置字段写入）、原生多行值、跨多张令牌表聚合查询、自动按项目切换全局当前配置、agent 自动填表专用接口、
 Notion 后端、到期提醒。到期提醒使用飞书多维表格原生自动化。

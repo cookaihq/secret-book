@@ -72,7 +72,7 @@ def cli(tmp_path):
     def build_env(extra_env=None):
         env = {
             key: value for key, value in os.environ.items()
-            if not key.startswith("SECRET_BOOK_")
+            if not key.startswith(("SECRET_BOOK_", "CODEX_", "CLAUDE_", "OPENCLAW_", "HERMES_", "WORKBUDDY_", "CODEBUDDY_", "COPILOT_", "OPENCODE_"))
         }
         env.update({
             "HOME": str(home),
@@ -80,6 +80,7 @@ def cli(tmp_path):
             "PYTHONPATH": str(REPO / "tests" / "support") + os.pathsep + env.get("PYTHONPATH", ""),
             "FAKE_LARK_STATE": str(state_path),
             "FAKE_LARK_LOG": str(log_path),
+            "GIT_CEILING_DIRECTORIES": str(tmp_path),
         })
         env.update(extra_env or {})
         return env
