@@ -1,0 +1,7 @@
+{
+  "repository": "https://github.com/cookaihq/secret-book",
+  "skill_path": ".",
+  "channel": "stable",
+  "tag_prefix": "v",
+  "ref_type": "tag"
+}

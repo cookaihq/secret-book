@@ -104,7 +104,7 @@ def test_first_save_confirms_keys_paths_and_survives_separate_processes(cli, con
     confirmed = cli(*command, "--confirm", output["confirmation_token"])
     assert confirmed.returncode == 0, confirmed.stderr
     assert target.read_text() == "EXAMPLE_KEY='synthetic-secret-one'\n"
-    assert target.stat().st_mode & 0o777 == 0o600
+    cli.assert_private(target)
     persisted = cli.home / ".config/secret-book/consumer-configurations.json"
     for text in [preview.stdout, pending.stdout, confirmed.stdout, persisted.read_text()]:
         assert "synthetic-secret-one" not in text
@@ -262,6 +262,7 @@ def test_multiple_file_failure_records_completed_writes_and_requires_readback(cl
     sys.path.insert(0, str(cli.repo / 'scripts'))
     import secret_book as api
     monkeypatch.setenv('HOME', str(cli.home))
+    monkeypatch.setenv('USERPROFILE', str(cli.home))
     monkeypatch.setenv('GIT_CEILING_DIRECTORIES', str(cli.cwd.parent))
     monkeypatch.chdir(cli.cwd)
     for key in ('EXAMPLE_KEY', 'EXAMPLE_URL', 'CODEX_HOME'):

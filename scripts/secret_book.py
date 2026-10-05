@@ -27,19 +27,25 @@ import shlex
 import subprocess
 import sys
 
+if os.name == "nt":
+    # Redirected Windows streams otherwise use the active ANSI code page.
+    for _stream in (sys.stdin, sys.stdout, sys.stderr):
+        if hasattr(_stream, "reconfigure"):
+            _stream.reconfigure(encoding="utf-8")
+
 # 一次性再入护栏：exec 之后仍不在目标 venv，说明 venv 目录本身坏了。没有这个
 # 标记会无限 execv 且零输出。标记值存的是**本轮目标 venv 的 realpath**，不是
 # 布尔——变量被外部环境 export 时值不匹配就不算本轮再入，仍照常自动重建。
 _BOOTSTRAP_REEXEC_ENV = "SECRET_BOOK_BOOTSTRAP_REEXEC"
 
 # 本脚本在 <仓根>/scripts/ 下，项目根（pyproject.toml 所在）是上一级。
-_SKILL_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_SKILL_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 
 # 重定位只认 uv 原生的 UV_PROJECT_ENVIRONMENT，且基准必须是**项目根**——uv 0.8
 # 就是这么解析相对值的；按 CWD 解析会在用户项目目录里设了相对值时把进程 exec
 # 进用户项目的 venv。绝对值不受影响：os.path.join 遇到绝对路径直接返回它。
 _VENV_DIR = os.path.join(_SKILL_DIR, os.environ.get("UV_PROJECT_ENVIRONMENT") or ".venv")
-_VENV_PY = os.path.join(_VENV_DIR, "bin", "python")
+_VENV_PY = os.path.join(_VENV_DIR, "Scripts", "python.exe") if os.name == "nt" else os.path.join(_VENV_DIR, "bin", "python")
 
 
 def _bootstrap_fail(msg):
@@ -48,11 +54,15 @@ def _bootstrap_fail(msg):
 
 
 def _bootstrap_manual_hint():
+    if os.name == "nt":
+        # PowerShell literal quoting: apostrophes are doubled, never evaluated.
+        project = "'" + _SKILL_DIR.replace("'", "''") + "'"
+        return "uv sync --project %s --locked --no-dev" % project
     # 必须 shell 引用：路径含空格时，未引用的 `rm -rf /tmp/sp ace/.venv` 被照抄
     # 执行会删掉两个无关路径。
     # --no-dev：重建的是**运行**环境，不该拉进测试依赖（ADR 0007 §1.2 补充 2）。
     # 本 skill 的 pyproject 有 dev 组；--no-dev 保证自动重建不安装 pytest。
-    return "rm -rf %s && uv sync --project %s --no-dev" % (
+    return "rm -rf %s && uv sync --project %s --locked --no-dev" % (
         shlex.quote(_VENV_DIR), shlex.quote(_SKILL_DIR)
     )
 
@@ -70,7 +80,8 @@ def _bootstrap_require_uv():
         probe = subprocess.run(["uv", "--version"], stdout=subprocess.PIPE,
                                stderr=subprocess.STDOUT, timeout=30)
     except (OSError, subprocess.SubprocessError):
-        _bootstrap_fail("uv 未安装。请执行：curl -LsSf https://astral.sh/uv/install.sh | sh")
+        hint = "winget install --id astral-sh.uv -e" if os.name == "nt" else "curl -LsSf https://astral.sh/uv/install.sh | sh"
+        _bootstrap_fail("uv 未安装。请执行：" + hint)
     parts = probe.stdout.decode("utf-8", "replace").split()  # 形如 "uv 0.8.11 (...)"
     found = parts[1] if len(parts) > 1 else "0"
     try:
@@ -82,8 +93,8 @@ def _bootstrap_require_uv():
 
 
 def _bootstrap_ensure():
-    target = os.path.realpath(_VENV_DIR)
-    if os.path.realpath(sys.prefix) == target:
+    target = os.path.normcase(os.path.realpath(_VENV_DIR))
+    if os.path.normcase(os.path.realpath(sys.prefix)) == target:
         # 已到位：清掉本轮标记，别让 run 派生的子进程继承后误判。
         if os.environ.get(_BOOTSTRAP_REEXEC_ENV) == target:
             os.environ.pop(_BOOTSTRAP_REEXEC_ENV, None)
@@ -95,7 +106,7 @@ def _bootstrap_ensure():
         _bootstrap_require_uv()
         sys.stderr.write("[bootstrap] 运行环境缺失，正在按 uv.lock 重建 %s ...\n" % _VENV_DIR)
         try:
-            sync = subprocess.run(["uv", "sync", "--project", _SKILL_DIR, "--no-dev"],
+            sync = subprocess.run(["uv", "sync", "--project", _SKILL_DIR, "--locked", "--no-dev"],
                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                   timeout=600)  # 网络调用必设总预算（ADR 0006）
         except subprocess.TimeoutExpired:
@@ -106,6 +117,10 @@ def _bootstrap_ensure():
                             % (_bootstrap_manual_hint(),
                                sync.stdout.decode("utf-8", "replace")))
     os.environ[_BOOTSTRAP_REEXEC_ENV] = target  # putenv，execv 后的进程读得到
+    if os.name == "nt":
+        # Windows CRT exec does not preserve POSIX process/exit semantics and
+        # quoting. Wait explicitly so callers receive the real result and pipes.
+        raise SystemExit(subprocess.run([_VENV_PY] + sys.argv).returncode)
     os.execv(_VENV_PY, [_VENV_PY] + sys.argv)   # 拉回目标解释器重启自身
 
 
@@ -117,7 +132,6 @@ import argparse
 import contextlib
 import datetime
 import dataclasses
-import fcntl
 import hashlib
 import json
 import re
@@ -126,6 +140,8 @@ import string
 import tempfile
 import time
 from pathlib import Path
+
+from local_platform import exclusive_lock, private_directory, private_permissions, sync_replaced_file
 
 SKILL_NAME = "secret-book"
 ENV_APP_TOKEN = "SECRET_BOOK_APP_TOKEN"
@@ -177,7 +193,7 @@ class BindingsFileError(Exception):
 
 
 class LocalWriteResultUnknown(OSError):
-    """The destination was replaced, but directory durability was not confirmed."""
+    """The destination was replaced, but platform-specific verification failed."""
 
 
 def _auth_split_flow_action(profile: str, *, profile_placeholder: bool = False,
@@ -390,7 +406,7 @@ def _parse_env_file(path: Path) -> dict:
     result: dict = {}
     if not path.is_file():
         return result
-    for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
+    for raw in path.read_text(encoding="utf-8-sig", errors="replace").splitlines():
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
@@ -472,16 +488,14 @@ def _env_assignment(key: str, value: str) -> str:
 
 @contextlib.contextmanager
 def _config_file_lock(path: Path):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.parent.chmod(0o700)
+    private_directory(path.parent)
     lock_path = path.with_name(path.name + ".lock")
     fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
     try:
-        os.chmod(lock_path, 0o600)
-        fcntl.flock(fd, fcntl.LOCK_EX)
-        yield
+        private_permissions(lock_path, fd=fd)
+        with exclusive_lock(fd):
+            yield
     finally:
-        fcntl.flock(fd, fcntl.LOCK_UN)
         os.close(fd)
 
 
@@ -489,18 +503,14 @@ def _atomic_replace_bytes(path: Path, data: bytes) -> None:
     fd, temp_name = tempfile.mkstemp(prefix=path.name + ".", dir=path.parent)
     replaced = False
     try:
-        os.fchmod(fd, 0o600)
+        private_permissions(Path(temp_name), fd=fd)
         with os.fdopen(fd, "wb") as handle:
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temp_name, path)
         replaced = True
-        dir_fd = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(dir_fd)
-        finally:
-            os.close(dir_fd)
+        sync_replaced_file(path, data)
     except BaseException as exc:
         try:
             os.close(fd)
@@ -512,7 +522,7 @@ def _atomic_replace_bytes(path: Path, data: bytes) -> None:
             pass
         if replaced and isinstance(exc, OSError):
             raise LocalWriteResultUnknown(
-                f"本地写入结果不明：{path} 已替换，但无法确认目录同步完成（{exc}）。"
+                f"本地写入结果不明：{path} 已替换，但后续同步或回读校验失败（{exc}）。"
                 "当前文件可能已经包含新内容；请先读取核对，不要直接重放写操作"
             ) from exc
         raise
@@ -520,7 +530,7 @@ def _atomic_replace_bytes(path: Path, data: bytes) -> None:
 
 def _write_env_updates(path: Path, updates: dict) -> None:
     """Preserve comments and unknown keys while replacing selected assignments atomically."""
-    original = path.read_text(encoding="utf-8") if path.is_file() else ""
+    original = path.read_text(encoding="utf-8-sig") if path.is_file() else ""
     output = []
     emitted = set()
     for raw in original.splitlines():
@@ -859,7 +869,7 @@ def _lark_exec(cmd: list, kind: str, what: str) -> subprocess.CompletedProcess:
     timeout = LARK_READ_TIMEOUT if kind == "read" else LARK_WRITE_TIMEOUT
     for attempt in range(LARK_MAX_ATTEMPTS):
         try:
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+            proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", timeout=timeout)
         except FileNotFoundError:
             # 确定性失败：二进制不在 PATH，重试必然同样失败
             die("lark-cli 未安装或不在 PATH 中。请先安装 lark-cli 并完成 user 身份登录")
@@ -1258,8 +1268,7 @@ def _load_bindings() -> dict:
 def _save_bindings(data: dict) -> None:
     data["version"] = 2
     path = bindings_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.parent.chmod(0o700)
+    private_directory(path.parent)
     payload = (json.dumps(data, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
     _atomic_replace_bytes(path, payload)
 
@@ -1272,7 +1281,7 @@ def _bindings_file_lock():
 
 def _project_scope() -> str:
     proc = subprocess.run(["git", "rev-parse", "--show-toplevel"],
-                          capture_output=True, text=True)
+                          capture_output=True, text=True, encoding="utf-8", timeout=10)
     root = proc.stdout.strip() if proc.returncode == 0 and proc.stdout.strip() else str(Path.cwd())
     return str(Path(root).resolve())
 
@@ -1658,7 +1667,7 @@ def cmd_run(args) -> None:
     env = dict(os.environ)
     env.update(pairs)
     info(f"注入 {len(pairs)} 个变量（{', '.join(pairs)}）后执行：{' '.join(args.command)}")
-    if binding_to_save is None:
+    if binding_to_save is None and os.name != "nt":
         try:
             os.execvpe(args.command[0], args.command, env)
         except FileNotFoundError:
@@ -1668,6 +1677,8 @@ def cmd_run(args) -> None:
         proc = subprocess.run(args.command, env=env)
     except FileNotFoundError:
         die(f"命令不存在：{args.command[0]}")
+    if binding_to_save is None:
+        raise SystemExit(proc.returncode)
     if proc.returncode == 0:
         try:
             with _bindings_file_lock():
@@ -1764,14 +1775,18 @@ def cmd_copy(args) -> None:
         value = next(iter(pairs.values()))
     else:
         die(f"记录 {rec['name']} 有多个键（{', '.join(pairs)}），必须用 --key 指定")
-    for tool in (["pbcopy"], ["wl-copy"], ["xclip", "-selection", "clipboard"]):
+    tools = (["clip.exe"],) if os.name == "nt" else (["pbcopy"], ["wl-copy"], ["xclip", "-selection", "clipboard"])
+    for tool in tools:
         try:
-            subprocess.run(tool, input=value, text=True, check=True)
+            # clip.exe detects Unicode via BOM; no shell, argv secret or extra newline.
+            subprocess.run(tool, input=value.encode("utf-16" if os.name == "nt" else "utf-8"),
+                           check=True, timeout=10, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
             info(f"已复制到剪贴板：{args.key or next(iter(pairs))} = {_mask(value)}")
             return
-        except (FileNotFoundError, subprocess.CalledProcessError):
+        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
             continue
-    die("无可用剪贴板工具（pbcopy/wl-copy/xclip）。请在你自己的终端运行本命令，禁止让 agent 明文打印")
+    names = "clip.exe" if os.name == "nt" else "pbcopy/wl-copy/xclip"
+    die(f"无可用剪贴板工具（{names}）。请在你自己的终端运行本命令，禁止让 agent 明文打印")
 
 
 def cmd_init_create(args) -> None:
@@ -1812,7 +1827,7 @@ def cmd_init_create(args) -> None:
 
 def _config_save_handoff(app_token: str, table_id: str, profile: str,
                          confirmation: str) -> str:
-    return shlex.join([
+    argv = [
         "uv", "run", "--project", _SKILL_DIR,
         os.path.join(_SKILL_DIR, "scripts", "secret_book.py"),
         "config", "save", "--name", "<名称>",
@@ -1820,7 +1835,10 @@ def _config_save_handoff(app_token: str, table_id: str, profile: str,
         "--table-id", table_id,
         "--lark-profile", profile,
         "--confirm-identity", confirmation,
-    ])
+    ]
+    if os.name == "nt":
+        return "uv run --project " + " ".join("'" + arg.replace("'", "''") + "'" for arg in argv[3:])
+    return shlex.join(argv)
 
 
 def cmd_init_adopt(args) -> None:

@@ -34,7 +34,7 @@ class Configuration:
 
     def read_json(self, path):
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
             if not isinstance(data, dict):
                 raise ValueError
             return data

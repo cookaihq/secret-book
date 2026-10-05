@@ -1,5 +1,4 @@
 import json
-import stat
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -256,7 +255,7 @@ def test_concurrent_saves_preserve_both_configs_and_private_file_mode(cli):
     assert "个人" in listed.stdout
     assert listed.stdout.count("是") == 1
     config_path = cli.home / ".config" / "secret-book" / ".env"
-    assert stat.S_IMODE(config_path.stat().st_mode) == 0o600
+    cli.assert_private(config_path)
     raw_json = next(
         line.split("=", 1)[1].strip("'") for line in config_path.read_text(encoding="utf-8").splitlines()
         if line.startswith("SECRET_BOOK_CONFIGS_JSON=")

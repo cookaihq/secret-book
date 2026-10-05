@@ -41,11 +41,13 @@ $secret-book 用我保存的 CNB 凭证执行 git push
 
 ## 安装
 
-支持 macOS 和 Linux，当前不支持 Windows。需要：
+支持 macOS、Linux 和原生 Windows（2.4.0 起）。Windows 使用 PowerShell，无需 WSL；安装和调用须在同一个实际运行环境内完成。需要：
 
 - [uv](https://docs.astral.sh/uv/) >= 0.8
 - 已安装 `lark-cli`，并至少有一个 user 身份完成登录的 profile
 - 能访问飞书开放平台
+
+Windows 还需要支持文件访问权限的磁盘（如 NTFS），以及当前 Windows 环境能运行的 `lark-cli`。
 
 把下面一段发给 Claude Code 或 Codex：
 
@@ -54,6 +56,8 @@ $secret-book 用我保存的 CNB 凭证执行 git push
 ```
 
 业务配置保存与修复需要 2.3.0 或更新版本。Skill 会自动检查更新并提醒，实际拉取前征求确认。可以说“请检查 secret-book 是否有更新”；决定更新后再明确要求安装新版。
+
+Windows 的脚本、文件权限、并发写入、确认恢复和命令执行在原生环境验证；飞书响应使用模拟数据。真实账号登录与飞书业务请求，以及 Codex / Claude Code 的新会话发现和隐式触发，仍须在实际安装后分别核对。
 
 ## 首次设置
 
@@ -114,9 +118,11 @@ $secret-book 用我保存的 CNB 凭证执行 git push
 | macOS | 通常为 `/Users/〈用户名〉/.config/secret-book/` |
 | Linux | 通常为 `/home/〈用户名〉/.config/secret-book/` |
 | WSL | WSL 自己的 Linux 用户目录，通常为 `/home/〈WSL 用户名〉/.config/secret-book/`；不自动共用 Windows 用户目录，完整流程尚未验证 |
-| Windows 原生 | 当前不支持 |
+| Windows 原生 | `%USERPROFILE%\.config\secret-book\`，通常为 `C:\Users\〈用户名〉\.config\secret-book\`；不是 `%APPDATA%`，不自动读取 WSL 的配置 |
 
 实际个人目录由 Python 运行时确定，Agent 应报告当前环境的完整路径；表配置可能被当前工作目录或进程中的完整配置覆盖，顺序见下方“项目需要使用另一张令牌表”。这些文件独立于安装目录，更新 Skill 不应删除它们。
+
+本机配置仍是明文。macOS/Linux 写入文件仅允许本人访问；Windows 写入前设置并核对只允许当前用户与系统账户访问的权限，磁盘不支持时停止写入。不会改动已有业务项目目录的权限。Windows 剪贴板支持中文；复制不会自动清空剪贴板。
 
 一条令牌记录可以只保存一个值，也可以保存一组需要同时注入的 dotenv 键值，例如
 OSS 的 `ACCESS_KEY_ID`、`ACCESS_KEY_SECRET`、`ENDPOINT` 和 `BUCKET`。
@@ -206,20 +212,29 @@ Agent 可以复用这条绑定；切换到另一张令牌表后不会误用原�
 `~/.config/secret-book/.env`。如果旧安装无法识别多配置格式，应先更新该安装并在
 新会话中执行 `config list`；不要把现有配置降级成旧格式。
 
+### Windows 提示不支持或找不到依赖
+
+可以说：“请检查当前 Agent 实际使用的 secret-book 路径和版本，确认在原生 Windows 运行，并核对 uv、lark-cli 和配置目录；保留已有配置。”2.3.x 的 Windows 限制需要升级到 2.4.0 或更新版本才能解除；仅改提示语或切换终端不能修复旧代码。
+
 ### 项目需要使用另一张令牌表
 
 按当前配置查表的命令，按以下顺序选择第一套完整配置：进程环境变量、当前目录的 `.env.secret-book`、`.env.local`、
 当前目录的 `.env`，最后才是在显式使用 `--use-global-config` 时读取全局当前配置。
+工作文件夹就是 Agent 执行命令时所在的目录，与 Skill 安装目录不同；不会向父目录搜索配置。
 项目配置必须在同一层提供完整的表定位、profile 和身份字段，不能跨层拼接。也可以用 `--config-name <名称>` 明确选择一套完整的全局命名配置；它跳过进程和项目来源，不改变当前配置。
 
 已经写入业务文件的值不会随令牌表或默认配置切换而改变。如需从另一张表更新业务配置，让 Agent 重新检查来源、确认记录与目标文件，再写入。
+
+## 自动检查更新
+
+Git 安装在 Windows 使用 PowerShell 检查，在 macOS/Linux/WSL 使用 Bash；复制安装由 Agent 按随包元数据检查稳定版本。检查失败继续当前任务，实际更新须经你确认。可以说“关闭 secret-book 的自动检查更新”；开关只保存并读取个人配置目录 `.env` 中的 `AUTO_UPDATE_CHECK=0`，与业务配置的读取顺序独立。说“重新开启”即可恢复检查。
 
 ## 版本与 Release
 
 <!-- release-table:begin -->
 | 目标 | 版本 | Release |
 |---|---|---|
-| secret-book | 2.3.0 | [v2.3.0](https://github.com/cookaihq/secret-book/releases/tag/v2.3.0) |
+| secret-book | 2.4.0 | [v2.4.0](https://github.com/cookaihq/secret-book/releases/tag/v2.4.0) |
 <!-- release-table:end -->
 
 ## License

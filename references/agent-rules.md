@@ -31,7 +31,7 @@ uv run --project "${SKILL_DIR}" "${SKILL_DIR}/scripts/secret_book.py" agent-rule
 | `qwen` / `iflow` | `~/.qwen/QWEN.md` / `~/.iflow/IFLOW.md` 及项目候选 | 保留原支持入口，按当前宿主版本核对 |
 | `amp` / `goose` | `~/.config/amp/AGENTS.md` / `~/.config/goose/AGENTS.md` 及项目候选 | 保留原支持入口，不把路径存在当成实际加载 |
 
-`--config-dir` 用于调用 Agent 已确认的真实配置目录，不能传一个希望它加载但实际没使用的目录。非默认 profile、远程 Agent、容器或 Windows/WSL 应在真实执行环境检查；本 CLI 当前不支持 Windows 原生写入。
+`--config-dir` 用于调用 Agent 已确认的真实配置目录，不能传一个希望它加载但实际没使用的目录。非默认 profile、远程 Agent、容器或 Windows/WSL 应在真实执行环境检查。2.4.0 起支持 Windows 原生规则检查和已授权的文件写入；Windows 用户目录由 Python 的 `Path.home()` 确定，WSL 使用自己的 Linux 目录。文件写入成功仍不证明宿主会话已加载。
 
 ## 修改规则
 

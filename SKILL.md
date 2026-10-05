@@ -1,8 +1,8 @@
 ---
 name: secret-book
-version: 2.3.0
+version: 2.4.0
 description: >-
-  v2.3.0｜令牌：把 token、API key、账号密码、OSS/数据库等配置组保存到用户自己的
+  v2.4.0｜令牌：把 token、API key、账号密码、OSS/数据库等配置组保存到用户自己的
   飞书令牌表里，agent 按意图或精确 ID 查询取用，取用输出一律掩码；本机可保存多套
   有名称的令牌配置，并持久切换唯一的当前配置（默认配置）。当用户说
   "存一下这个 token/API key/密钥/凭证"、"用我存的 xx 推送/登录/调用"、"我的
@@ -14,7 +14,7 @@ description: >-
   active (default) configuration; confirms field mappings and writes consumer configuration to the effective local files; also supports explicit temporary injection.
   Requires lark-cli logged in. Do NOT use for encrypted vault needs: this skill
   stores plaintext; point users to a real password manager for high-value secrets.
-compatibility: 需要 macOS 或 Linux、已安装并登录 lark-cli（user 身份）、uv >= 0.8（脚本运行时由 uv 管理，首次运行自动建 .venv）、可访问飞书开放平台的网络；当前不支持 Windows；Claude Code 与 Codex 双端可用
+compatibility: 支持 macOS、Linux 和原生 Windows；需要当前环境可执行且已登录的 lark-cli（user 身份）、uv >= 0.8（运行时由 uv 管理）及飞书网络；Windows 使用 PowerShell、支持 DACL 的文件系统；Claude Code 与 Codex 共用入口，宿主实际发现与加载须分别验证
 ---
 
 # secret-book
@@ -34,19 +34,27 @@ compatibility: 需要 macOS 或 Linux、已安装并登录 lark-cli（user 身�
 
 ## 第 0 步：自动检查更新
 
-每次进入正式流程前运行：
+每次进入正式流程前，先确认当前安装形态和实际执行环境（Windows 原生与 WSL 分开）。Git 检出在 macOS/Linux/WSL 使用 Bash：
 
 ```bash
 scripts/check_update.sh
 ```
 
+原生 Windows 使用 PowerShell，不要求 Bash 或 WSL：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$SkillDir/scripts/check_update.ps1"
+```
+
 - 退出码 `0`：直接继续，不复述输出。
 - 退出码 `10`：原样转述报告并询问是否拉取。用户确认后运行
-  `scripts/check_update.sh --pull`；用户拒绝、未回应或拉取失败时，继续使用当前版本。
+  Bash 的 `scripts/check_update.sh --pull` 或 PowerShell 的 `scripts/check_update.ps1 -Pull`；用户拒绝、未回应或拉取失败时，继续使用当前版本。
 - 用户要求关闭时，只在 `~/.config/secret-book/.env` 写入
   `AUTO_UPDATE_CHECK=0`，保留文件内其它内容。
 
 检查更新失败不能阻塞用户当前任务。该脚本直接运行，不经过 uv。
+
+复制安装按随包 `update.json` 查询 stable tag 及其 commit SHA，展示本地/远端版本、来源、tag、SHA 和目标目录。用户确认后才能按该 SHA 下载到临时目录，校验名称、版本与 description 前缀，再原子替换并回读验证；失败保留或恢复旧目录。缺少可验证的查询或安装能力时报告 `not-applicable` 并继续，不把 Git 检查跳过解释成“已是最新”。
 
 ## 命令入口
 
@@ -58,6 +66,14 @@ uv run --project "$SKILL_DIR" "$SKILL_DIR/scripts/secret_book.py" <action> [flag
 
 禁止把示例改成裸 `python3`。脚本虽有运行时 bootstrap，调用方仍必须显式使用
 skill 自带的 uv 项目。
+
+Windows PowerShell 将 `$SkillDir` 设为当前加载的 Skill 实体目录，入口相同：
+
+```powershell
+uv run --project "$SkillDir" "$SkillDir/scripts/secret_book.py" <action> [flags]
+```
+
+Windows 解释器固定到 `.venv/Scripts/python.exe`；配置个人目录来自 Python 的 `Path.home()`（通常为 `%USERPROFILE%`），不从 `%APPDATA%` 或 WSL 读取。管道使用 UTF-8；Windows PowerShell 5.1 发送中文 stdin 前设 `$OutputEncoding = [System.Text.UTF8Encoding]::new($false)`，值仍仅经 stdin。脚本支持 UTF-8 BOM 的 dotenv 和业务声明文件。`run` 直接启动实际可执行程序，PowerShell cmdlet 须显式通过 `powershell.exe`/`pwsh` 调用，不能把引号或 shell 表达式当作可执行文件名。Windows `copy` 用 `clip.exe` 接收 Unicode stdin。
 
 ## 使用前检查当前 Agent 规则
 
@@ -101,8 +117,7 @@ SECRET_BOOK_CONFIGS_JSON='{"schema_version":1,"active_id":"cfg_xxxxxxxxxx","conf
 
 每套配置原子包含：`name`、`app_token`、`table_id`、`lark_profile`、
 `feishu_app_id`、`feishu_user_open_id`。`cfg_` ID 稳定不变；名称必须唯一。
-脚本通过文件锁、同目录临时文件、`fsync` 和 `os.replace` 更新文件，权限为
-`0600`，并保留注释、`AUTO_UPDATE_CHECK` 和未知键。不要手工编辑 JSON；使用：
+脚本通过文件锁、同目录临时文件、刷新和原子替换更新文件，仅允许当前用户访问（Windows 另允许 SYSTEM），并保留注释、`AUTO_UPDATE_CHECK` 和未知键。不要手工编辑 JSON；使用：
 
 | 用户意图 | 命令与结果 |
 |---|---|
@@ -151,8 +166,8 @@ SECRET_BOOK_CONFIGS_JSON='{"schema_version":1,"active_id":"cfg_xxxxxxxxxx","conf
 只清理旧字段，不改已有命名配置；空结构化配置与完整旧资源字段并存时创建第一套
 命名配置；空结构化配置只与 `SECRET_BOOK_IDS` 并存时只删除该旧绑定。
 
-本地配置和绑定采用原子替换。替换前失败表示没有写入；替换完成后目录 `fsync`
-失败时，CLI 明确报告“本地写入结果不明”，调用方必须先读取对应文件核对，禁止
+本地配置和绑定采用原子替换。macOS/Linux 使用 `0600` 文件权限；Windows 在写入值前设置并校验仅当前用户与 SYSTEM 可访问的 DACL，无法设置时拒绝写入。已有业务项目目录不改权限。Windows 使用字节范围锁，临时文件先刷新再替换并回读内容和 ACL；POSIX 保留目录 `fsync`。不承诺断电后的目录持久性。
+替换前失败表示没有写入；替换完成后同步或回读失败时，CLI 明确报告“本地写入结果不明”，调用方必须先读取对应文件核对，禁止
 直接重放写命令。`run --bind` 在这种情况下仍返回已成功子命令的退出码，并要求先
 运行 `bindings` 核对。
 

@@ -1,5 +1,6 @@
 import json
 import sys
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -109,7 +110,7 @@ def test_legacy_binding_is_reported_but_never_guessed_or_queried(cli, tmp_path):
         "version": 1,
         "bindings": [{
             "scope": str(cli.cwd.resolve()),
-            "command": "python",
+            "command": Path(sys.executable).name,
             "ids": ["sec_legacy0001"],
             "hits": 4,
         }],
@@ -136,7 +137,7 @@ def test_legacy_binding_is_reported_but_never_guessed_or_queried(cli, tmp_path):
     assert json.loads(bindings_path.read_text(encoding="utf-8"))["version"] == 1
 
     removed = cli(
-        "unbind", "--command", "python", "--legacy",
+        "unbind", "--command", Path(sys.executable).name, "--legacy",
         extra_env={"FAKE_LARK_FAIL_ON_CALL": "1"},
     )
     assert removed.returncode == 0, removed.stderr
@@ -229,9 +230,7 @@ def test_concurrent_binding_updates_preserve_both_entries(cli, tmp_path):
             "expires_at": None,
             "visible_to": None,
         })
-        command = tmp_path / f"command-{index}"
-        command.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-        command.chmod(0o755)
+        command = cli.success_command(tmp_path / f"command-{index}")
         commands.append(command)
     state = json.loads(cli.state_path.read_text(encoding="utf-8"))
     state["records"] = {"app_test_work": records}
@@ -250,7 +249,7 @@ def test_concurrent_binding_updates_preserve_both_entries(cli, tmp_path):
     data = json.loads(
         (cli.home / ".config" / "secret-book" / "bindings.json").read_text(encoding="utf-8")
     )
-    assert {entry["command"] for entry in data["bindings"]} == {"command-1", "command-2"}
+    assert {entry["command"] for entry in data["bindings"]} == {command.name for command in commands}
 
 
 def test_binding_persistence_failure_does_not_override_successful_command_exit(cli, tmp_path):
@@ -317,9 +316,7 @@ def test_binding_reports_unknown_durability_without_overriding_command_success(c
         "visible_to": None,
     }]}
     cli.state_path.write_text(json.dumps(state), encoding="utf-8")
-    command = tmp_path / "successful-command"
-    command.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    command.chmod(0o755)
+    command = cli.success_command(tmp_path / "successful-command")
 
     result = cli(
         "run", "--id", "sec_bindunknown", "--bind", "--use-global-config",
@@ -356,9 +353,7 @@ def test_rebind_leaves_old_namespace_binding_for_explicit_cleanup(cli, tmp_path)
         "visible_to": None,
     }]}
     cli.state_path.write_text(json.dumps(state), encoding="utf-8")
-    command = tmp_path / "bound-command"
-    command.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    command.chmod(0o755)
+    command = cli.success_command(tmp_path / "bound-command")
     bound = cli(
         "run", "--id", "sec_rebind001", "--bind", "--use-global-config",
         "--", str(command),
@@ -384,7 +379,7 @@ def test_rebind_leaves_old_namespace_binding_for_explicit_cleanup(cli, tmp_path)
     prefix = data["bindings"][0]["resource_namespace"][:12]
 
     removed = cli(
-        "unbind", "--command", "bound-command", "--namespace", prefix,
+        "unbind", "--command", command.name, "--namespace", prefix,
         extra_env={"FAKE_LARK_FAIL_ON_CALL": "1"},
     )
     assert removed.returncode == 0, removed.stderr
@@ -416,9 +411,7 @@ def test_shared_namespace_binding_survives_other_config_remove_and_rebind(cli, t
         "visible_to": None,
     }]}
     cli.state_path.write_text(json.dumps(state), encoding="utf-8")
-    command = tmp_path / "shared-command"
-    command.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    command.chmod(0o755)
+    command = cli.success_command(tmp_path / "shared-command")
     assert cli(
         "run", "--id", "sec_shared0001", "--bind", "--use-global-config",
         "--", str(command),

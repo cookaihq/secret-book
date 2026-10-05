@@ -1,11 +1,18 @@
 # secret-book CLI 参考
 
-一般情况下直接让 Agent 调用 Skill 即可。需要手工操作时，从仓库目录执行：
+一般情况下直接让 Agent 调用 Skill 即可。以下供 Agent 排查入口使用；保持业务工作目录，`SKILL_DIR` 指向本次实际加载的 Skill 实体目录：
 
 ```bash
-cd "${HOME}/agent-repos/secret-book"
-uv run --project . scripts/secret_book.py --help
+uv run --project "$SKILL_DIR" "$SKILL_DIR/scripts/secret_book.py" --help
 ```
+
+原生 Windows 使用 PowerShell，`$SkillDir` 同样是实际安装目录，不需要 Bash/WSL：
+
+```powershell
+uv run --project "$SkillDir" "$SkillDir/scripts/secret_book.py" --help
+```
+
+不要为了调用 Skill 改变目录；项目配置按命令的工作目录读取。Windows 与 WSL 的个人配置目录各自独立，见 [README](../README.md#保存和取用凭证)。
 
 常用命令：
 
@@ -31,8 +38,15 @@ uv run --project . scripts/secret_book.py --help
 
 ```bash
 printf '%s\n' 'GITHUB_TOKEN=<token>' | \
-  uv run --project . scripts/secret_book.py save \
+  uv run --project "$SKILL_DIR" "$SKILL_DIR/scripts/secret_book.py" save \
   --name <名称> --service github --purpose <用途> --use-global-config
+```
+
+PowerShell 管道需使用 UTF-8，`$Payload` 仅代表已获授权的内存输入，不把真实值写入命令参数或脚本：
+
+```powershell
+$OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$Payload | uv run --project "$SkillDir" "$SkillDir/scripts/secret_book.py" save --name "<名称>" --service github --purpose "<用途>" --use-global-config
 ```
 
 `config list/use` 直接管理全局配置，不接受 `--use-global-config`。`save`、`list`、
