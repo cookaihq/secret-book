@@ -1,8 +1,8 @@
 ---
 name: secret-book
-version: 2.4.0
+version: 2.5.0
 description: >-
-  v2.4.0｜令牌：把 token、API key、账号密码、OSS/数据库等配置组保存到用户自己的
+  v2.5.0｜令牌：把 token、API key、账号密码、OSS/数据库等配置组保存到用户自己的
   飞书令牌表里，agent 按意图或精确 ID 查询取用，取用输出一律掩码；本机可保存多套
   有名称的令牌配置，并持久切换唯一的当前配置（默认配置）。当用户说
   "存一下这个 token/API key/密钥/凭证"、"用我存的 xx 推送/登录/调用"、"我的
@@ -12,9 +12,10 @@ description: >-
   storage in the user's own Feishu Bitable: save/list/run/copy tokens, API keys,
   logins and config groups; stores multiple named local configurations with one
   active (default) configuration; confirms field mappings and writes consumer configuration to the effective local files; also supports explicit temporary injection.
-  Requires lark-cli logged in. Do NOT use for encrypted vault needs: this skill
+  Feishu access requires lark-cli logged in; local integration development does not.
+  Do NOT use for encrypted vault needs: this skill
   stores plaintext; point users to a real password manager for high-value secrets.
-compatibility: 支持 macOS、Linux 和原生 Windows；需要当前环境可执行且已登录的 lark-cli（user 身份）、uv >= 0.8（运行时由 uv 管理）及飞书网络；Windows 使用 PowerShell、支持 DACL 的文件系统；Claude Code 与 Codex 共用入口，宿主实际发现与加载须分别验证
+compatibility: macOS、Linux 和原生 Windows；脚本需要 uv >= 0.8，访问飞书需要当前环境已登录的 lark-cli（user 身份）及网络；Windows 使用 PowerShell、支持 DACL 的文件系统；Claude Code、Codex 和 WorkBuddy 共用源文件，宿主发现、调用与恢复须分别验证
 ---
 
 # secret-book
@@ -56,9 +57,26 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$SkillDir/scripts/check
 
 复制安装按随包 `update.json` 查询 stable tag 及其 commit SHA，展示本地/远端版本、来源、tag、SHA 和目标目录。用户确认后才能按该 SHA 下载到临时目录，校验名称、版本与 description 前缀，再原子替换并回读验证；失败保留或恢复旧目录。缺少可验证的查询或安装能力时报告 `not-applicable` 并继续，不把 Git 检查跳过解释成“已是最新”。
 
+## 第 1 步：明确本次角色和目标
+
+每次调用必读 [角色与首次使用](references/roles.md) 的“确定角色”和“检查实际状态”，
+再读取当前角色部分。按用户明确角色 → 同一未完成任务 → Agent 对明确任务的判断 →
+信息不足时请用户选择的顺序处理。Agent 判断时用一句话说明角色及目标，无需重复等待确认。
+
+管理员管理表；维护者维护已有记录；使用者只读远端表并取用；接入开发者可直接做本地
+契约与模拟测试。先确定角色再决定是否需要依赖、登录或初始化。缺配置不默认建表，
+缺权限不升级角色；角色不是飞书权限，也不能替代具体操作授权。
+
+同一任务中断后，先恢复该任务进度并重新读取角色规范；任务完成后关闭待办。
+跨职责操作按用户目标切换角色，复用已明确授权，不留下永久管理员身份。
+需要脚本时按角色规范的“记录任务与执行”使用 `workflow start/status/finish`。
+下文业务命令示例省略公共参数；Skill 执行时均追加
+`--workflow <task.id> --workflow-agent <当前宿主>`，保持实际业务工作目录。
+
 ## 命令入口
 
-依赖：`lark-cli` 已安装并完成 user 身份登录，`uv >= 0.8`。所有 Python 命令统一用：
+执行脚本需要 `uv >= 0.8`；访问飞书才需要已登录 user 身份的 `lark-cli`。
+仅解释或在飞书界面维护无需本机初始化。所有 Python 命令统一用：
 
 ```bash
 uv run --project "$SKILL_DIR" "$SKILL_DIR/scripts/secret_book.py" <action> [flags]
@@ -77,7 +95,8 @@ Windows 解释器固定到 `.venv/Scripts/python.exe`；配置个人目录来自
 
 ## 使用前检查当前 Agent 规则
 
-自动检查更新后，按当前会话确定宿主，运行 `agent-rule --agent <当前Agent>` 只读检查。
+确定角色后，需要通过脚本取用或写入配置时，按当前会话确定宿主，运行
+`agent-rule --agent <当前Agent>` 只读检查。
 不能以配置目录存在推断宿主。核对已有 secret-book 说明、旧自动注入规则、项目覆盖、
 禁用与 symlink 共用实体；脚本标记手工规则或未知加载状态时继续审查。
 检查不授权修改全局规则，规则文件不保存业务密钥。具体入口、状态、安装授权及宿主
@@ -194,7 +213,7 @@ SECRET_BOOK_CONFIGS_JSON='{"schema_version":1,"active_id":"cfg_xxxxxxxxxx","conf
 
 ## 身份确认与运行前校验
 
-`config save`、`config rebind`、`config migrate`、`init-create`、`init-adopt`
+`config save`、`config rebind`、`config migrate`、`init-create`、`init-adopt`、`init-connect`
 都使用两阶段确认：
 
 1. 第一次运行只调用本机 `lark-cli profile list` 和
@@ -261,19 +280,25 @@ CLI 版本和授权请求生命周期。不得连续盲目重试，也不得立�
 
 ## 首次初始化或新增一套配置
 
-先用 `lark-cli profile list` 确认候选 profile，并让用户确定三件事：配置名称、
-要使用的 profile、创建新令牌表还是接管已有表。
+先按 [当前角色的首次使用流程](references/roles.md) 判定本次需要哪种准备。
+使用者和维护者连接已有表；管理员在明确授权后才新建或接管；开发者可不配置真实表。
+需要访问飞书时才用 `lark-cli profile list` 确认本人 profile，并确定表目标和配置名称。
 
 - 新建：`init-create --lark-profile <profile> [--base-name 令牌表]`
 - 接管：`init-adopt --url <多维表格 URL> --lark-profile <profile>`
+- 只读连接：`init-connect --url <多维表格 URL> --lark-profile <profile>`；需要本次任务参数。
 
-两条命令第一次都进入身份确认。用户确认后追加 `--confirm-identity` 重跑。
+新建和接管是管理员操作；只读连接适用于管理员、维护者和使用者。第一次都进入身份确认，用户确认后追加 `--confirm-identity` 重跑。
 `init-create` 创建 Base、`credentials` 表和 9 个字段；`init-adopt` 校验字段，缺列
 会在全部已有字段校验通过后补建，类型不符时不创建任何字段并拒绝接管；
 `visible_to` 必须是人员多选字段。成功输出中包含带完整 `uv run --project ...
 scripts/secret_book.py` 前缀的可执行 `config save` 命令和已确认的 identity token；
 与用户确认配置名称及表定位后执行该命令，即可保存，不需要再次确认同一身份。
 身份若在两步之间变化，token 会失效并重新触发确认。
+
+`init-connect` 完整校验字段后只查询可见元数据，返回 `connected_read_only`、可见记录数、
+缺 ID 数和 `save_command`，不保存本机连接、不补列或补 ID。缺列返回管理员处理引导，
+类型不符停止；空表仍可连接。保存交接携带同一任务上下文和已确认身份。
 
 初始化和保存配置都不自动安装 agent 全局规则。若要安装，继续按“agent-rule”章节
 单独取得用户确认。
@@ -315,6 +340,7 @@ resource namespace 的自动绑定。禁止把裸 ID 自动归到当前配置。
 | 执行并绑定 | `… run --id sec_xxx --bind --use-global-config -- <命令>` | 仅子进程退出码为 0 时保存自动绑定 |
 | 自动执行 | `… run --auto --use-global-config -- <命令>` | 使用当前令牌表对应的历史绑定；无绑定、旧绑定或失效绑定退出 3 |
 | 复制 | `… copy --name site-admin --key PASSWORD --use-global-config` | 值进入剪贴板，只输出键名和掩码值；一次只能指定一条记录 |
+| 补齐 ID | `… repair-ids --name <唯一名称> --use-global-config` | 仅维护者任务；先预览，确认后 `--confirm <token>`，不读取凭证值，已有 ID 不改写 |
 | 列绑定 | `… bindings` | 输出命名空间前 12 位、项目、命令、记录 ID、时间和次数 |
 | 解绑 | `… unbind --command <命令名> --use-global-config` | 只解除当前解析出的令牌配置命名空间内的绑定 |
 
@@ -329,8 +355,9 @@ payload 每行格式为 `KEY=value`，值是首个 `=` 后的原文，不去引�
 `visible_to` 是令牌表中的人员多选字段：空值表示不限制，非空表示只有名单内用户
 可取用。当前用户的 `open_id` 来自已经固定并验证的令牌配置。名单外记录在
 list/get/run/copy 全部路径中不可见，没有绕过 flag。`save` 的名称查重例外地跨
-全表执行，避免隐藏记录导致重名。旧表缺此列时视为不限制；执行一次 `init-adopt`
-会补建。
+全表执行，避免隐藏记录导致重名。旧表缺此列时，既有查表接口仍按不限制处理；
+首次连接须通过完整字段检查，缺列交管理员经授权运行 `init-adopt` 补建。
+`list/get/run/copy/configure` 不补写记录 ID；缺 ID 的目标记录由维护者显式处理。
 
 ## 自动绑定
 
@@ -369,13 +396,17 @@ MCP 等已经读取旧配置的进程按其机制重新加载或重启，业务�
 |---|---|
 | `0` | CLI 动作成功，或被包装命令成功 |
 | `1` | 参数、配置、数据或确定性外部调用错误 |
-| `3` | stdout 是身份或业务接入的确认/修复 JSON，或旧 `run --auto` 没有可用绑定；按 schema/status 判断，不把待确认当成执行成功 |
+| `3` | stdout 是角色、身份、表或记录、业务接入、恢复的引导 JSON，或旧 `run --auto` 没有可用绑定；按 schema/status 判断，不把待确认当成执行成功 |
 | `121` | 写请求遇到瞬时失败，结果可能已生效，禁止盲目重试 |
 | 其它 | `run` 透传被包装命令的退出码 |
 
+宿主经 PowerShell `-Command` 包装时，非零码可能显示为 `1`；同时核对已知 schema 的
+JSON `status`，不能把 `confirmation_required` 当作初始化失败。保留原始码的方式见
+[CLI 退出码](references/cli.md#退出码)。
+
 ## agent-rule
 
-规则块当前为 v5，主流程见 [Agent 规则检查](references/agent-rules.md)。
+规则块当前为 v6，主流程见 [Agent 规则检查](references/agent-rules.md)。
 `agent-rule --agent <当前Agent>` 只读；`--all` 仅显式盘点。`--install` / `--remove`
 必须指定 Agent，并按用户明确的规则修改授权操作。先展示路径和完整规则；手工修改
 默认不覆盖。写入不含开发 worktree 路径，真实会话加载仍需宿主验证。

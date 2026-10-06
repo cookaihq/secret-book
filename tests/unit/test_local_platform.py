@@ -125,7 +125,7 @@ def test_windows_bootstrap_rebuilds_relative_environment_and_handoff_runs_in_pow
     (copied / "scripts").mkdir(parents=True)
     for name in ("pyproject.toml", "uv.lock", ".python-version"):
         shutil.copyfile(REPO / name, copied / name)
-    for name in ("secret_book.py", "local_platform.py"):
+    for name in ("secret_book.py", "local_platform.py", "task_state.py", "task_runtime.py"):
         shutil.copyfile(REPO / "scripts" / name, copied / "scripts" / name)
     script = copied / "scripts/secret_book.py"
     env = cli.build_env({"UV_PROJECT_ENVIRONMENT": "隔离 venv", "UV_OFFLINE": "1"})

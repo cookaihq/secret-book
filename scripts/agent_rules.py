@@ -10,7 +10,7 @@ import re
 import subprocess
 from pathlib import Path
 
-VERSION = 5
+VERSION = 6
 BEGIN = re.compile(r"<!-- secret-book:fallback-rule v(\d+) -->")
 END = "<!-- /secret-book:fallback-rule -->"
 AGENTS = ("codex", "claude-code", "hermes", "openclaw", "workbuddy", "codebuddy", "gemini",
@@ -21,9 +21,9 @@ def rule_block():
     return f"""<!-- secret-book:fallback-rule v{VERSION} -->
 ## secret-book 配置取用与修复
 1. Skill / Plugin 正常读取自己的本机配置。缺项或有证据表明配置无效时，报告字段、实际来源和错误依据，让用户选择修改本机配置或用 secret-book；沿用已明确选择，不擅自切换。
-2. 选择 secret-book 后，读取当前安装的 SKILL.md 与 references/consumer-setup.md。先只读检查当前调用 Agent 实际适用的规则、覆盖和旧规则；检查不授权修改规则，规则文件不保存业务密钥。
+2. 选择 secret-book 后，读取当前安装的 SKILL.md，按其角色入口明确本次职责，再读取 references/consumer-setup.md。先只读检查当前调用 Agent 实际适用的规则、覆盖和旧规则；检查不授权修改规则，规则文件不保存业务密钥。
 3. 能安全持久保存的配置优先写入本机。修复已有错误必须替换实际生效的原文件/原字段；环境变量来源先定位启动或注入配置，不得另写全局文件假装修好。首次新增沿用既定位置，无既定位置才建议调用者个人全局目录。
-4. 展示令牌表/身份、候选记录与账号、表中实际 key 到业务字段的映射、目标文件与替换项，唯一候选首次也确认。没有记录或缺 key 时引导用户在自己的表或文件中填写，不要求把密钥发到聊天。
+4. 展示令牌表/身份、候选记录与账号、表中实际 key 到业务字段的映射、目标文件与替换项，唯一候选首次也确认。没有可用记录或缺 key 时联系维护者或自行填写业务文件，不要求把密钥发到聊天。
 5. 确认后用 secret-book 的配置写入入口保存，仅更新确认的字段并回读；让调用者重新读配置，报告写入路径、实际生效来源及验证范围。后续直接运行调用者，不每次查表；表中轮换不自动同步本机。
 6. 短期令牌、仅本轮、不允许保存或目标不支持保存时才显式使用临时注入。网络故障、余额或权限不足不能直接判定密钥错误；配置修复不授权自动重发有副作用或结果不明的业务请求。凭证值不上屏、不进 argv 或规则文件。
 {END}"""

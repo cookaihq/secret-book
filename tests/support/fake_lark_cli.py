@@ -51,6 +51,9 @@ def main():
         return 97
 
     state = _state()
+    if argv[:1] == ["base"] and argv[1] in state.get("shortcut_errors", {}):
+        print(json.dumps({"ok": False, "error": state["shortcut_errors"][argv[1]]}), file=sys.stderr)
+        return 1
     if argv[:2] == ["profile", "list"]:
         profile_exit = state.get("profile_exit")
         if profile_exit:
@@ -112,6 +115,13 @@ def main():
             "record_id_list": [record.get("_record_id", "") for record in records],
             "has_more": False,
         }}))
+        return 0
+    if argv[:2] == ["base", "+record-batch-update"]:
+        updates = json.loads(_arg(argv, "--json"))["update_records"]
+        for record in state.get("records", {}).get(_arg(argv, "--base-token"), []):
+            record.update(updates.get(record["_record_id"], {}))
+        Path(os.environ["FAKE_LARK_STATE"]).write_text(json.dumps(state), encoding="utf-8")
+        print(json.dumps({"data": {"updated": list(updates)}}))
         return 0
     print(json.dumps({"ok": False, "error": {"type": "config", "message": "unsupported fake call"}}), file=sys.stderr)
     return 2

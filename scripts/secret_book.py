@@ -142,6 +142,7 @@ import time
 from pathlib import Path
 
 from local_platform import exclusive_lock, private_directory, private_permissions, sync_replaced_file
+from task_state import Journal, TaskStateError, ROLES, BASES
 
 SKILL_NAME = "secret-book"
 ENV_APP_TOKEN = "SECRET_BOOK_APP_TOKEN"
@@ -178,6 +179,17 @@ FIELD_SCHEMA = [
 META_FIELDS = ["id", "name", "service", "account", "purpose", "expires_at"]
 
 _SENSITIVE: list[str] = []  # 运行期收集到的令牌值，用于掩码任何将要打印的文本
+_ACTIVE_TASK = None  # Set only while an explicitly selected task is executing.
+
+
+def _task_target(**values):
+    if _ACTIVE_TASK is not None:
+        _ACTIVE_TASK.set_target(values)
+
+
+def _task_before_write(kind, destination):
+    if _ACTIVE_TASK is not None:
+        _ACTIVE_TASK.before_write(kind, destination)
 
 
 # ---------- 通用工具 ----------
@@ -500,6 +512,9 @@ def _config_file_lock(path: Path):
 
 
 def _atomic_replace_bytes(path: Path, data: bytes) -> None:
+    if (_ACTIVE_TASK is not None and path != _ACTIVE_TASK.journal.path
+            and path != global_config_path().with_name("consumer-configurations.json")):
+        _task_before_write("local", str(path))
     fd, temp_name = tempfile.mkstemp(prefix=path.name + ".", dir=path.parent)
     replaced = False
     try:
@@ -684,7 +699,8 @@ def resolve_config_snapshot(use_global: bool) -> ConfigSnapshot:
             die("检测到旧版平面令牌配置。请先运行 config migrate --name <名称>")
 
     hint = "" if use_global else "（未启用全局配置；如需使用当前配置，请加 --use-global-config）"
-    die(f"没有可用的完整令牌配置{hint}。先运行 init-create/init-adopt 和 config save")
+    die(f"没有可用的完整令牌配置{hint}。先按本次角色准备：使用者／维护者连接已有表；"
+        "管理员仅在明确授权后新建或接管；接入开发可继续本地模拟")
 
 
 def _snapshot_for_args(args) -> ConfigSnapshot:
@@ -722,6 +738,10 @@ def _higher_priority_resource_source() -> str:
 
 def require_backend(args) -> "FeishuBackend":
     snapshot = _snapshot_for_args(args)
+    _task_target(app_token=snapshot.app_token, table_id=snapshot.table_id,
+                 profile=snapshot.lark_profile, app_id=snapshot.feishu_app_id,
+                 open_id=snapshot.feishu_user_open_id, source=snapshot.source,
+                 config_id=snapshot.config_id, config_name=snapshot.config_name)
     observed = _capture_profile_identity(snapshot.lark_profile, snapshot=snapshot)
     if (observed["app_id"] != snapshot.feishu_app_id
             or observed["open_id"] != snapshot.feishu_user_open_id):
@@ -866,6 +886,8 @@ def _lark_exec(cmd: list, kind: str, what: str) -> subprocess.CompletedProcess:
     """
     if kind not in ("read", "write"):
         die(f"内部错误：未知的 lark-cli 调用类型 {kind}")
+    if kind == "write":
+        _task_before_write("remote", what)
     timeout = LARK_READ_TIMEOUT if kind == "read" else LARK_WRITE_TIMEOUT
     for attempt in range(LARK_MAX_ATTEMPTS):
         try:
@@ -1002,15 +1024,15 @@ def _confirmed_profile_identity(profile: str, confirmation_token: str | None) ->
     identity = _capture_profile_identity(profile)
     expected = _identity_confirmation_token(identity)
     if not confirmation_token or not secrets.compare_digest(confirmation_token, expected):
-        print(json.dumps({
+        raise ProfileGuidance({
             "schema_version": CONFIG_IDENTITY_CONFIRMATION_SCHEMA,
             "status": "confirmation_required",
             "reason": "请确认该应用与用户就是要访问令牌表的飞书身份",
             "observed_identity": {key: value for key, value in identity.items()
                                   if not key.startswith("_")},
             "confirmation_token": expected,
-        }, ensure_ascii=False, sort_keys=True))
-        raise SystemExit(EXIT_GUIDANCE)
+        })
+    _task_target(profile=profile, app_id=identity["app_id"], open_id=identity["open_id"])
     return identity
 
 
@@ -1166,11 +1188,61 @@ def _fmt_expires(raw) -> str:
 # ---------- 记录解析与选择 ----------
 
 def backfill_ids(backend: FeishuBackend, records: list) -> None:
-    """手工粘贴进表格的行没有 id：遇到即补写，幂等静默（design.md §3.3）。"""
+    """Only the explicit maintenance action may fill missing IDs."""
     for rec in records:
         if not rec["id"] and rec["_record_id"]:
             rec["id"] = gen_id()
             backend.update_record(rec["_record_id"], {"id": rec["id"]})
+
+
+def _inspect_connection(backend: FeishuBackend) -> dict:
+    """Check an existing table without repairing its schema or its records."""
+    missing = _missing_table_fields(backend)
+    if missing:
+        raise ProfileGuidance({
+            "schema": "secret-book.table-guidance/v1",
+            "status": "table_fields_missing",
+            "missing_fields": [field["name"] for field in missing],
+            "message": "已有表缺少字段，请令牌表管理员补齐。本次仅检查，没有修改表结构。",
+        })
+    records = backend.list_records()
+    return {"app_token": backend.app_token, "table_id": backend.table_id,
+            "visible_records": len(records),
+            "records_without_id": sum(not record["id"] for record in records),
+            "verification": "schema_and_visible_metadata_read_only"}
+
+
+def _repair_one_record_id(args) -> None:
+    """Preview and explicitly repair one visible, uniquely named record."""
+    backend = require_backend(args)
+    records = backend.find("name", args.name, with_secret=False)
+    if len(records) != 1:
+        die("目标名称没有唯一的可见记录；请在飞书核对记录和可见范围")
+    record = records[0]
+    if not record["_record_id"]:
+        die("服务未返回记录定位，无法补齐 ID")
+    if record["id"]:
+        print(json.dumps({"status": "already_has_id", "name": record["name"],
+                          "id": record["id"]}, ensure_ascii=False))
+        return
+    review = {"resource_namespace": _snapshot_for_args(args).resource_namespace,
+              "record_id": record["_record_id"], "name": record["name"],
+              "service": record["service"], "account": record["account"],
+              "operation": "assign_missing_id"}
+    canonical = json.dumps(review, sort_keys=True, ensure_ascii=False)
+    token = hashlib.sha256(("secret-book ID repair\n" + canonical).encode("utf-8")).hexdigest()
+    if not args.confirm or not secrets.compare_digest(args.confirm, token):
+        raise ProfileGuidance({"schema": "secret-book.record-maintenance/v1",
+                               "status": "confirmation_required", "review": review,
+                               "confirmation_token": token,
+                               "message": "确认仅为此记录补齐 ID；不会读取或修改凭证值"})
+    backfill_ids(backend, records)
+    checked = backend.find("name", args.name, with_secret=False)
+    if (len(checked) != 1 or checked[0]["_record_id"] != record["_record_id"]
+            or checked[0]["id"] != record["id"]):
+        die("补齐 ID 后回读不一致，结果不明；请检查该记录，不要直接重放", EXIT_AMBIGUOUS)
+    print(json.dumps({"status": "id_repaired", "name": record["name"],
+                      "id": record["id"]}, ensure_ascii=False))
 
 
 def resolve_records(backend: FeishuBackend, args, need_secret: bool) -> list:
@@ -1191,7 +1263,13 @@ def resolve_records(backend: FeishuBackend, args, need_secret: bool) -> list:
             die(f"找不到 name={name} 的记录")
         if len(matches) > 1:
             die(f"name={name} 命中 {len(matches)} 条记录（别名重复），请改用 --id 精确指定")
-        backfill_ids(backend, matches)
+        if not matches[0]["id"]:
+            raise ProfileGuidance({
+                "schema": "secret-book.record-guidance/v1",
+                "status": "record_id_missing",
+                "record_name": name,
+                "message": "该记录缺少 ID；请凭证维护者显式补齐后再取用。本次没有修改令牌表。",
+            })
         out += matches
     for sid in ids:
         matches = backend.find("id", sid, with_secret=need_secret)
@@ -1411,6 +1489,7 @@ def cmd_config_save(args) -> None:
         if store["active_id"] is None:
             store["active_id"] = config_id
         _write_env_updates(target, {ENV_CONFIGS_JSON: _named_config_json(store)})
+    _task_target(config_id=config_id, config_name=name, app_token=app_token, table_id=table_id)
     current_note = "，并设为当前配置" if store["active_id"] == config_id else ""
     info(f"已保存令牌配置：{name}（id={config_id}{current_note}）")
 
@@ -1620,7 +1699,9 @@ def cmd_save(args) -> None:
 def cmd_list(args) -> None:
     backend = require_backend(args)
     records = backend.list_records()
-    backfill_ids(backend, records)
+    missing_ids = sum(not record["id"] for record in records)
+    if missing_ids:
+        info(f"有 {missing_ids} 条可见记录缺少 ID；请凭证维护者显式补齐。查询不会修改令牌表。")
     if not records:
         info("令牌表为空")
         return
@@ -1667,7 +1748,8 @@ def cmd_run(args) -> None:
     env = dict(os.environ)
     env.update(pairs)
     info(f"注入 {len(pairs)} 个变量（{', '.join(pairs)}）后执行：{' '.join(args.command)}")
-    if binding_to_save is None and os.name != "nt":
+    _task_before_write("process", Path(args.command[0]).name)
+    if binding_to_save is None and os.name != "nt" and _ACTIVE_TASK is None:
         try:
             os.execvpe(args.command[0], args.command, env)
         except FileNotFoundError:
@@ -1778,6 +1860,7 @@ def cmd_copy(args) -> None:
     tools = (["clip.exe"],) if os.name == "nt" else (["pbcopy"], ["wl-copy"], ["xclip", "-selection", "clipboard"])
     for tool in tools:
         try:
+            _task_before_write("clipboard", tool[0])
             # clip.exe detects Unicode via BOM; no shell, argv secret or extra newline.
             subprocess.run(tool, input=value.encode("utf-16" if os.name == "nt" else "utf-8"),
                            check=True, timeout=10, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
@@ -1819,6 +1902,7 @@ def cmd_init_create(args) -> None:
         table.get("table_id") or table.get("id"),
         "+base-create 返回的 table_id/id",
     )
+    _task_target(app_token=app_token, table_id=table_id)
     print(proc.stdout.rstrip())
     confirmation = _identity_confirmation_token(identity)
     info("令牌表已创建。与用户确认配置名称和表定位后，运行下一行命令保存令牌配置：")
@@ -1836,17 +1920,18 @@ def _config_save_handoff(app_token: str, table_id: str, profile: str,
         "--lark-profile", profile,
         "--confirm-identity", confirmation,
     ]
+    if _ACTIVE_TASK is not None:
+        argv += ["--workflow", _ACTIVE_TASK.task_id,
+                 "--workflow-agent", _ACTIVE_TASK.context["agent"]]
     if os.name == "nt":
         return "uv run --project " + " ".join("'" + arg.replace("'", "''") + "'" for arg in argv[3:])
     return shlex.join(argv)
 
 
-def cmd_init_adopt(args) -> None:
-    profile = args.lark_profile
-    identity = _confirmed_profile_identity(profile, args.confirm_identity)
+def _resolve_table_url(url: str, profile: str, user_open_id: str = "") -> FeishuBackend:
     profile_args = ["--profile", profile] if profile else []
     proc = _lark_exec(["lark-cli", "base", "+url-resolve", "--as", "user",
-                       "--format", "json", *profile_args, "--url", args.url],
+                       "--format", "json", *profile_args, "--url", url],
                       "read", "+url-resolve")
     if proc.returncode != 0:
         die(f"+url-resolve 失败 (exit {proc.returncode}): {proc.stderr.strip()[:500]}")
@@ -1868,7 +1953,11 @@ def cmd_init_adopt(args) -> None:
         die(f"无法从 URL 解析 base_token/table_id，+url-resolve 返回：{json.dumps(inner, ensure_ascii=False)[:300]}")
     app_token = _validate_resource_id(app_token, "+url-resolve 返回的 base_token/app_token")
     table_id = _validate_resource_id(table_id, "+url-resolve 返回的 table_id/block_id")
-    backend = FeishuBackend(app_token, table_id, profile)
+    return FeishuBackend(app_token, table_id, profile, user_open_id)
+
+
+def _missing_table_fields(backend: FeishuBackend) -> list:
+    """Validate every existing field before the caller decides whether to repair."""
     listed = backend._run("+field-list", ["--limit", "200"])
     # +field-list 返回 data.fields = [{name, type, ...}]（实测 lark-cli 1.0.82）
     if "data" not in listed:
@@ -1903,14 +1992,33 @@ def cmd_init_adopt(args) -> None:
                 "拒绝接管令牌表，请修正后重试")
         if name == "visible_to" and name in existing and existing[name].get("multiple") is not True:
             die("字段 visible_to 必须是人员多选字段；当前字段不是多选，拒绝接管令牌表")
-    for spec in FIELD_SCHEMA:
+    return [spec for spec in FIELD_SCHEMA if spec["name"] not in existing]
+
+
+def cmd_init_adopt(args) -> None:
+    profile = args.lark_profile
+    identity = _confirmed_profile_identity(profile, args.confirm_identity)
+    backend = _resolve_table_url(args.url, profile, identity["open_id"])
+    _task_target(app_token=backend.app_token, table_id=backend.table_id)
+    for spec in _missing_table_fields(backend):
         name, want = spec["name"], spec["type"]
-        if name not in existing:
-            backend._run("+field-create", ["--json", json.dumps(spec, ensure_ascii=False)])
-            info(f"已补建缺失字段 {name} ({want})")
+        backend._run("+field-create", ["--json", json.dumps(spec, ensure_ascii=False)])
+        info(f"已补建缺失字段 {name} ({want})")
     confirmation = _identity_confirmation_token(identity)
     info("字段校验通过。与用户确认配置名称和表定位后，运行下一行命令保存令牌配置：")
-    print(_config_save_handoff(app_token, table_id, profile, confirmation))
+    print(_config_save_handoff(backend.app_token, backend.table_id, profile, confirmation))
+
+
+def _connect_existing_table(args) -> None:
+    profile = args.lark_profile
+    identity = _confirmed_profile_identity(profile, args.confirm_identity)
+    backend = _resolve_table_url(args.url, profile, identity["open_id"])
+    _task_target(app_token=backend.app_token, table_id=backend.table_id)
+    result = _inspect_connection(backend)
+    result.update(status="connected_read_only", profile=profile,
+                  save_command=_config_save_handoff(backend.app_token, backend.table_id,
+                                                     profile, _identity_confirmation_token(identity)))
+    print(json.dumps(result, ensure_ascii=False))
 
 
 # ---------- agent-rule（当前调用 Agent 的规则检查与显式维护）----------
@@ -1925,6 +2033,33 @@ def cmd_agent_rule(args) -> None:
 def cmd_consumer(args) -> None:
     from consumers import dispatch
     dispatch(sys.modules[__name__], args)
+
+
+def _workflow_journal():
+    return Journal(sys.modules[__name__], global_config_path().with_name("workflows.json"))
+
+
+def cmd_workflow(args) -> None:
+    from task_runtime import context
+    journal = _workflow_journal()
+    current = context(sys.modules[__name__], args.agent)
+    if args.workflow_action == "start":
+        if not args.role:
+            raise ProfileGuidance({"schema": "secret-book.workflow-guidance/v1",
+                "status": "role_required", "roles": list(ROLES),
+                "message": "请先明确本次是管理令牌表、维护凭证、取用凭证还是开发业务接入"})
+        result = {"status": "started", "task": journal.start(args.role, args.basis, args.goal, current)}
+    elif args.workflow_action == "status":
+        result = ({"status": "task", "task": journal.status(current, args.id)} if args.id
+                  else {"status": "open_tasks", "tasks": journal.status(current)})
+    else:
+        result = {"status": args.outcome, "task": journal.close(args.id, current, args.outcome)}
+    # The underlying confirmation token is an implementation detail, not a second approval.
+    for task in result.get("tasks", [result.get("task")]):
+        if task and task.get("pending"):
+            task["pending"].pop("source_confirmation_token", None)
+    result.update(schema="secret-book.workflow/v1", path=str(journal.path))
+    print(json.dumps(result, ensure_ascii=False, sort_keys=True))
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog=SKILL_NAME, description=__doc__,
@@ -2092,6 +2227,44 @@ def build_parser() -> argparse.ArgumentParser:
     profile_flag(sp, required=True, with_confirmation=True)
     sp.set_defaults(func=cmd_init_adopt)
 
+    sp = sub.add_parser("init-connect", help="只读检查已有表的结构和可见记录，提供本机连接保存交接")
+    sp.add_argument("--url", required=True)
+    profile_flag(sp, required=True, with_confirmation=True)
+    sp.set_defaults(func=_connect_existing_table)
+
+    sp = sub.add_parser("repair-ids", help="预览并经确认补齐一条可见记录的 ID；不读取或改写凭证值")
+    sp.add_argument("--name", required=True, help="需要补齐 ID 的唯一记录名称")
+    sp.add_argument("--confirm", help="确认预览中的目标记录和仅补 ID 的操作")
+    common(sp)
+    sp.set_defaults(func=_repair_one_record_id)
+
+    # Existing direct CLI callers remain compatible. Skill calls always carry task context.
+    for name, command_parser in sub.choices.items():
+        leaves = config_sub.choices.values() if name == "config" else [command_parser]
+        for leaf in leaves:
+            required = name in ("init-connect", "repair-ids")
+            leaf.add_argument("--workflow", required=required, help="本次已确定角色的任务 ID")
+            leaf.add_argument("--workflow-agent", required=required,
+                              help="本次实际宿主；须与任务开始时一致")
+
+    workflow = sub.add_parser("workflow", help="开始、查看或关闭本次角色任务；无需飞书登录")
+    workflow_sub = workflow.add_subparsers(dest="workflow_action", required=True)
+    sp = workflow_sub.add_parser("start", help="记录本次角色、依据和无密钥目标")
+    sp.add_argument("--role", choices=ROLES)
+    sp.add_argument("--basis", choices=BASES, default="explicit", help="用户指定 explicit 或 Agent 判断 inferred")
+    sp.add_argument("--goal", required=True, help="简短任务目标，不得包含凭证值或授权码")
+    sp.add_argument("--agent", required=True, help="从实际会话确定的宿主，例如 codex、claude-code、workbuddy")
+    sp.set_defaults(func=cmd_workflow)
+    sp = workflow_sub.add_parser("status", help="恢复本上下文的任务信息；不访问飞书或执行待办")
+    sp.add_argument("--id", help="省略时列出本上下文全部未关闭任务")
+    sp.add_argument("--agent", required=True)
+    sp.set_defaults(func=cmd_workflow)
+    sp = workflow_sub.add_parser("finish", help="按完成或取消关闭任务，不回滚任何已执行动作")
+    sp.add_argument("--id", required=True)
+    sp.add_argument("--agent", required=True)
+    sp.add_argument("--outcome", choices=("completed", "cancelled"), default="completed")
+    sp.set_defaults(func=cmd_workflow)
+
     return p
 
 
@@ -2100,7 +2273,17 @@ def main() -> None:
     if getattr(args, "command", None) and args.command and args.command[0] == "--":
         args.command = args.command[1:]
     try:
-        args.func(args)
+        if bool(getattr(args, "workflow", None)) != bool(getattr(args, "workflow_agent", None)):
+            raise TaskStateError("context_required", "--workflow 与 --workflow-agent 必须成对提供")
+        if getattr(args, "workflow", None):
+            from task_runtime import execute
+            execute(sys.modules[__name__], args, _workflow_journal(), args.workflow, args.workflow_agent)
+        else:
+            args.func(args)
+    except TaskStateError as exc:
+        print(json.dumps({"schema": "secret-book.workflow-guidance/v1", "status": exc.status,
+                          "message": str(exc)}, ensure_ascii=False))
+        raise SystemExit(EXIT_GUIDANCE)
     except ProfileGuidance as exc:
         print(json.dumps(exc.payload, ensure_ascii=False, sort_keys=True))
         raise SystemExit(EXIT_GUIDANCE)

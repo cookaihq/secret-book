@@ -46,7 +46,7 @@ def test_codex_override_and_symlink_do_not_imply_session_loaded(cli):
     result = cli("agent-rule", "--install", "--agent", "codex", "--agent", "claude-code")
     assert result.returncode == 0
     assert claude.is_symlink()
-    assert shared.read_text().count("<!-- secret-book:fallback-rule v5 -->") == 1
+    assert shared.read_text().count("<!-- secret-book:fallback-rule v6 -->") == 1
     assert shared.read_text().startswith("Keep user rules.")
     assert ".worktrees/" not in shared.read_text()
     assert json.loads(result.stdout)["reports"][1]["write_status"] == "same_physical_file_already_processed"

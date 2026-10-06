@@ -10,7 +10,7 @@ uv run --project "${SKILL_DIR}" "${SKILL_DIR}/scripts/secret_book.py" agent-rule
 
 返回 `status` 区分 `missing`、`managed_current_static`、`outdated`、`custom_review`、`conflict_review` 和 `unknown`。每个文件还列出真实路径、symlink 别名、全局/项目范围和 `selected` / `shadowed` / `conditional_review` / `disabled` 等适用状态。`project_only` 表示目前发现的相关规则仅限项目。
 
-脚本能准确比较自己生成的 v5 规则块及已知文件优先级。对于自然语言、imports、IDE 开关、托管策略和版本差异，只标记需要审查；Agent 继续阅读实际适用说明并解释其中的限制。找到字符串不等于完成接入，`session_loaded: not_verified` 不能改口说“当前会话已生效”。旧 v1–v4 块应改成优先本机保存/原来源修复，不能继续照旧自动注入并重试。
+脚本能准确比较自己生成的 v6 规则块及已知文件优先级。对于自然语言、imports、IDE 开关、托管策略和版本差异，只标记需要审查；Agent 继续阅读实际适用说明并解释其中的限制。找到字符串不等于完成接入，`session_loaded: not_verified` 不能改口说“当前会话已生效”。旧 v1–v5 块应按当前 Skill 的角色入口及本机保存／原来源修复流程更新；检查不自动覆盖旧块。
 
 ## 宿主入口与核对范围
 
@@ -37,7 +37,7 @@ uv run --project "${SKILL_DIR}" "${SKILL_DIR}/scripts/secret_book.py" agent-rule
 
 检查发现缺失、旧规则或冲突时，先告诉用户具体文件、行为差异、作用范围和建议。读取不授权写入。只有用户明确要求安装、更新或移除规则时，才执行 `agent-rule --install|--remove --agent <当前Agent>`；提前展示完整新规则。多路径指向同一实体只写一次并保留 symlink。其他手工说明不删除，手改受管理块需要针对性的覆盖授权才能使用 `--force`；多个受管理块需人工审查。
 
-v5 规则引用安装的 Skill 和随包流程，不嵌入开发机或临时 worktree 脚本绝对路径。修改后仍须用宿主的新会话或实际规则查看入口验证加载；文件写入成功不能作为该验收的替代。
+v6 规则引用安装的 Skill 角色入口和随包业务流程，不复制角色协议或嵌入开发机、临时 worktree 脚本绝对路径。修改后仍须用宿主的新会话或实际规则查看入口验证加载；文件写入成功不能作为该验收的替代。
 
 ## 调研依据（2026-10-01）
 
