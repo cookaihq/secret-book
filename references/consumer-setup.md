@@ -73,6 +73,8 @@ uv run --project "${SKILL_DIR}" "${SKILL_DIR}/scripts/secret_book.py" configure 
 
 声明 `schema_version: 1`；`consumer` 为 `{"kind":"plugin","name":"example","skills":["example-a"]}` 或 `{"kind":"skill","name":"example"}`。`keys` 的每项声明 `required`、`sensitive`、`description`，非敏感项可以有 `default`。`groups` 是有关联的字段数组，例如 `[["EXAMPLE_KEY","EXAMPLE_URL"]]`。声明内不保存用户表、记录、账号和值。
 
-报告 schema 为 `secret-book.config-inspection/v1`：`consumer` 仅含 kind/name，`skill` 是真实 Skill 名，`cwd` 是规范绝对调用目录，`global_enabled` 表示本次是否启用全局读取。`layers` 按读取顺序列 `{path, revision}`；文件存在时 revision 为原始字节 SHA-256，缺文件为 null，读取错误须另标 `error`。`environment` 给每个声明字段的非空进程值 SHA-256（无值为 null）；`fields` 列 `{source,present,problem?}`，source 为完整文件路径、`environment`、`built-in default` 或 `missing`。报告可以有脱敏 `problems`。这些校验值仅用于拒绝过期报告，不能代替鉴权。
+报告 schema 为 `secret-book.config-inspection/v1`：`consumer` 仅含 kind/name，`skill` 必须显式提供，取真实 Skill 名，或在下述 Plugin 共享模式中取 null；`cwd` 是规范绝对调用目录，`global_enabled` 表示本次是否启用全局读取。`layers` 按读取顺序列 `{path, revision}`；文件存在时 revision 为原始字节 SHA-256，缺文件为 null，读取错误须另标 `error`。`environment` 给每个声明字段的非空进程值 SHA-256（无值为 null）；`fields` 列 `{source,present,problem?}`，source 为完整文件路径、`environment`、`built-in default` 或 `missing`。报告可以有脱敏 `problems`。这些校验值仅用于拒绝过期报告，不能代替鉴权。
+
+自 2.5.1 起，Plugin 没有真实业务调用方时，报告须显式保留 `skill: null`。此时只接受工作文件夹的 `.env.local`、`.env`，以及启用全局时的 Plugin 根 `.env.local`、`.env`；不读取任意 Skill 专属文件或普通 Skill 回退。不接受省略 skill 字段，也不能为满足接口借用一个 Skill 名称。独立 Skill 仍须提供真实名称。共享模式禁止 `--skill-only`，新增沿用 Plugin 共享文件或明确的项目范围，已有错误仍写回原来源；确认及公开恢复摘要保留 null。
 
 报告必须由调用者自己的加载器生成，不能让用户猜路径或让 Agent 手写一个“期望来源”。调用者使用其他格式或读取顺序时，应先提供相应写入器及来源验证，不伪造这份报告。

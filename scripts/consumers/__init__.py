@@ -101,7 +101,9 @@ class Configuration:
         expected = {"kind": self.consumer["kind"], "name": self.consumer["name"]}
         skill = report.get("skill")
         if (report.get("schema") != "secret-book.config-inspection/v1" or report.get("consumer") != expected
-                or not isinstance(skill, str) or (self.consumer["kind"] == "plugin" and skill not in self.consumer["skills"])
+                or "skill" not in report
+                or (skill is not None and not isinstance(skill, str))
+                or (self.consumer["kind"] == "plugin" and skill is not None and skill not in self.consumer["skills"])
                 or (self.consumer["kind"] == "skill" and skill != self.consumer["name"])
                 or report.get("cwd") != str(Path.cwd().resolve())
                 or type(report.get("global_enabled")) is not bool):
@@ -112,12 +114,16 @@ class Configuration:
                 or set(report["fields"]) != set(keys) or set(report["environment"]) != set(keys)):
             self.api.die("配置来源报告必须含按读取顺序排列的 layers、environment 和完整 fields")
         root = Path.home() / ".config" / self.consumer["name"]
-        allowed = {Path.cwd() / name for name in (f".env.{skill}", ".env.local", ".env")}
+        allowed = {Path.cwd() / ".env.local", Path.cwd() / ".env"}
+        if skill is not None:
+            allowed.add(Path.cwd() / f".env.{skill}")
         if report["global_enabled"]:
             allowed.add(root / ".env")
             if self.consumer["kind"] == "plugin":
-                allowed.update([root / skill / ".env.local", root / skill / ".env", root / f".env.{skill}",
-                                root / ".env.local", Path.home() / ".config" / skill / ".env"])
+                allowed.add(root / ".env.local")
+                if skill is not None:
+                    allowed.update([root / skill / ".env.local", root / skill / ".env", root / f".env.{skill}",
+                                    Path.home() / ".config" / skill / ".env"])
         layers = []
         paths = []
         for layer in report["layers"]:
@@ -235,6 +241,8 @@ class Configuration:
                               message="目标必须未被 Git 跟踪且已被忽略；未改索引、忽略规则或保存位置")
 
     def target(self, key, report, sources):
+        if self.args.skill_only and (self.consumer["kind"] != "plugin" or report["skill"] is None):
+            self.api.die("--skill-only 只适用于有真实调用 Skill 的 Plugin 报告；共享检查不能借用 Skill 身份")
         source = sources[key]
         if source == "environment":
             self.guidance("environment_source", key=key, message="先找到启动/注入环境变量的实际来源；写全局文件无法替换它")
@@ -247,8 +255,6 @@ class Configuration:
             self.guidance("global_disabled", key=key, message="调用者未启用全局读取；明确启用或选择项目范围后重新检查")
         root = Path.home() / ".config" / self.consumer["name"]
         if self.args.skill_only:
-            if self.consumer["kind"] != "plugin":
-                self.api.die("--skill-only 只适用于 Plugin")
             return root / f".env.{report['skill']}"
         return root / ".env"
 

@@ -39,10 +39,13 @@ def inspect(cli, *, skill="example-a", env=None, global_enabled=True):
     """A fixture caller with ADR 0003 dotenv precedence; actual AIhub is tested separately."""
     env = env or {}
     root = cli.home / ".config/example"
-    paths = [cli.cwd / f".env.{skill}", cli.cwd / ".env.local", cli.cwd / ".env"]
+    paths = ([cli.cwd / f".env.{skill}"] if skill else []) + [cli.cwd / ".env.local", cli.cwd / ".env"]
     if global_enabled:
-        paths += [root / skill / ".env.local", root / skill / ".env", root / f".env.{skill}",
-                  root / ".env.local", root / ".env", cli.home / ".config" / skill / ".env"]
+        if skill:
+            paths += [root / skill / ".env.local", root / skill / ".env", root / f".env.{skill}"]
+        paths += [root / ".env.local", root / ".env"]
+        if skill:
+            paths += [cli.home / ".config" / skill / ".env"]
     report = {"schema": "secret-book.config-inspection/v1", "status": "ok",
               "consumer": {"kind": "plugin", "name": "example"}, "cwd": str(cli.cwd.resolve()),
               "skill": skill, "global_enabled": global_enabled, "layers": [], "fields": {}, "environment": {}}
