@@ -2,9 +2,7 @@
 
 Secret Book 帮你通过 Claude Code、Codex 或 WorkBuddy 管理和取用飞书多维表格中的凭证。你可以维护令牌表、登记 API Key 和账号配置，也可以选取已有凭证，确认后保存到业务 Skill／Plugin 的本机配置，或仅供一次命令使用。
 
-2.5.1 支持 Plugin 共享凭证配置：没有具体业务 Skill 时只检查工作文件夹与 Plugin 共享层，仍由你确认保存位置和替换项。
-
-2.5.0 会先明确本次角色，再按职责引导首次使用，并记录未完成任务以便继续。
+2.5.2 在发现缺少 Lark CLI 时由 Agent 自动安装，检查可用后继续任务，无需再选择安装方式。Plugin 共享配置、角色引导和未完成任务恢复继续可用。
 
 ## 使用前需要知道
 
@@ -38,10 +36,10 @@ Secret Book 帮你通过 Claude Code、Codex 或 WorkBuddy 管理和取用飞书
 把下面一段发给你正在使用的 Claude Code、Codex 或 WorkBuddy：
 
 ```text
-请安装 secret-book：优先用 https://github.com/cookaihq/secret-book，网络故障时改用 https://cnb.cool/zhidateam/tannt/secret-book.git。保留已有配置，检查当前 Agent 能否发现和调用，并引导我补齐本次任务需要的依赖。
+请安装 secret-book：优先用 https://github.com/cookaihq/secret-book，网络故障时改用 https://cnb.cool/zhidateam/tannt/secret-book.git。保留已有配置，检查当前 Agent 能否发现和调用；缺少 Lark CLI 时自动安装并检查可用，再引导我完成必要的登录。
 ```
 
-脚本支持 macOS、Linux 和原生 Windows（2.4.0 起）。原生 Windows 使用 PowerShell，无需 WSL。Agent 执行脚本需要 [uv](https://docs.astral.sh/uv/) >= 0.8；访问令牌表还需要可用的 `lark-cli`、本人完成登录的飞书账号，以及飞书网络。Agent 会协助检查，登录可在需要访问表时完成。
+脚本支持 macOS、Linux 和原生 Windows（2.4.0 起）。原生 Windows 使用 PowerShell，无需 WSL。Agent 执行脚本需要 [uv](https://docs.astral.sh/uv/) >= 0.8；访问令牌表还需要 `lark-cli`、本人完成登录的飞书账号，以及飞书网络。安装或补齐依赖、准备访问飞书时，Agent 会联网从官方来源自动安装缺少的 Lark CLI，保留已有设置，检查可用后继续；无需安装宿主连接器。登录仍由你本人完成，安装成功不代表已经登录。下载或本机权限阻止安装时，Agent 会说明具体原因。
 
 Windows 写入配置需要支持文件访问权限的磁盘，例如 NTFS。安装和调用须在同一实际运行环境中进行；Windows 原生与 WSL 的依赖、登录和个人配置各自独立。只在飞书界面维护记录，或只讨论业务接入方案时，不必先建立本机令牌配置。
 
@@ -203,8 +201,10 @@ Agent 应报告实际完整路径。配置独立于 Skill 安装目录，更新 
 
 通过脚本取用或保存配置前，Agent 会检查当前宿主的相关规则，报告缺失、旧规则、项目覆盖或无法确认的状态；检查不自动安装或修改全局规则。
 
+安装或更新规则时，你会先在回复正文中看到目标文件、作用范围、新增或替换方式，以及代码块中的完整规则原文；下面才出现确认选项。第一项是“安装规则块（推荐）”或“更新规则块（推荐）”，第二项是“暂不安装”或“暂不更新”，由你看完后确认是否写入。
+
 ```text
-请检查当前 Agent 的 secret-book 使用规则，列出要修改的实际文件和新规则，确认后再安装或更新；保留其他规则和共用文件的链接。
+请检查当前 Agent 的 secret-book 使用规则。先在回复正文中展示目标文件、作用范围、新增或替换方式，以及完整规则代码块，再让我选择是否安装或更新；保留其他规则和共用文件的链接。
 ```
 
 规则文件只保存使用说明，不保存业务密钥。找到文件不代表当前会话已经加载，修改后仍需核对宿主实际入口。除三种主要宿主外，还有其他 Agent 的规则检查入口，范围见 [Agent 规则检查](references/agent-rules.md)；规则检查支持不等于该宿主已完成完整业务验收。
@@ -238,7 +238,7 @@ Git 安装在 Windows 使用随包 PowerShell 检查，在 macOS/Linux/WSL 使�
 <!-- release-table:begin -->
 | 目标 | 版本 | Release |
 |---|---|---|
-| secret-book | 2.5.1 | [v2.5.1](https://github.com/cookaihq/secret-book/releases/tag/v2.5.1) |
+| secret-book | 2.5.2 | [v2.5.2](https://github.com/cookaihq/secret-book/releases/tag/v2.5.2) |
 <!-- release-table:end -->
 
 ## License

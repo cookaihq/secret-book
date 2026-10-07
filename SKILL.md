@@ -1,8 +1,8 @@
 ---
 name: secret-book
-version: 2.5.1
+version: 2.5.2
 description: >-
-  v2.5.1｜令牌：把 token、API key、账号密码、OSS/数据库等配置组保存到用户自己的
+  v2.5.2｜令牌：把 token、API key、账号密码、OSS/数据库等配置组保存到用户自己的
   飞书令牌表里，agent 按意图或精确 ID 查询取用，取用输出一律掩码；本机可保存多套
   有名称的令牌配置，并持久切换唯一的当前配置（默认配置）。当用户说
   "存一下这个 token/API key/密钥/凭证"、"用我存的 xx 推送/登录/调用"、"我的
@@ -73,9 +73,34 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$SkillDir/scripts/check
 下文业务命令示例省略公共参数；Skill 执行时均追加
 `--workflow <task.id> --workflow-agent <当前宿主>`，保持实际业务工作目录。
 
+## Lark CLI 依赖自动准备
+
+用户要求安装或补齐 Secret Book 依赖，或本次任务需要访问飞书时，先完成本节。
+缺少 `lark-cli` 时，简短告知正在安装并直接执行，不再询问是否安装，也不提供
+“装连接器／手动安装／暂不补齐”选择。用户明确禁止安装时遵守其限制。
+纯说明、飞书界面指导和本地接入开发无需补装 Lark CLI。
+
+1. 在当前实际执行环境运行 `lark-cli --version`（超时 30 秒），确认能正常退出。
+   找不到命令时先检查已有安装及 PATH；可复用则修复当前进程 PATH，不重复安装或升级。
+   程序存在但启动失败时按具体错误处理，不把登录、网络或权限错误当成未安装。
+2. 确实缺失时，通过[官方包](https://www.npmjs.com/package/@larksuite/cli)执行
+   `npm install --global @larksuite/cli`；原生 Windows 用 `npm.cmd`，先实测 Node/npm 可运行。
+   优先使用当前用户可写的安装位置；系统前缀无权限时通过 `--prefix` 指定个人目录，
+   不要求提权。Node/npm 不可用时，从[官方 Releases](https://github.com/larksuite/cli/releases)
+   选取匹配当前系统与架构的预编译包，校验发行校验和后安装到个人目录。
+   此处只准备 CLI；宿主连接器和额外 Lark Skills 不是 Secret Book 的前置依赖。
+3. 联网安装设总预算 300 秒；仅超时、连接中断、429/5xx 等瞬时故障重试，最多 3 次，
+   退避 1、2 秒。重试前检查是否已经安装成功；鉴权、权限或无匹配发行包立即报告具体阻塞。
+4. 安装后让本次后续命令继承正确的 PATH，再真实执行 `lark-cli --version`。
+   原生 Windows 的 npm 包包含 `node_modules/@larksuite/cli/bin/lark-cli.exe`，
+   将该实际目录加入进程 PATH，确保 Python 子进程也能启动原生程序；只有 `.cmd` 包装器
+   能在 PowerShell 运行，不足以证明 Secret Book 可调用。报告实际版本和路径后继续原任务。
+5. 安装完成后，按原有流程检查 profile 并引导本人登录、确认身份；保留已有配置和登录态。
+   安装成功不代表已登录，也不代替身份、凭证保存或远端写入的授权。
+
 ## 命令入口
 
-执行脚本需要 `uv >= 0.8`；访问飞书才需要已登录 user 身份的 `lark-cli`。
+执行脚本需要 `uv >= 0.8`；访问飞书才需要已登录 user 身份的 `lark-cli`，缺失按上一节自动准备。
 仅解释或在飞书界面维护无需本机初始化。所有 Python 命令统一用：
 
 ```bash
@@ -408,8 +433,16 @@ JSON `status`，不能把 `confirmation_required` 当作初始化失败。保留
 
 规则块当前为 v6，主流程见 [Agent 规则检查](references/agent-rules.md)。
 `agent-rule --agent <当前Agent>` 只读；`--all` 仅显式盘点。`--install` / `--remove`
-必须指定 Agent，并按用户明确的规则修改授权操作。先展示路径和完整规则；手工修改
-默认不覆盖。写入不含开发 worktree 路径，真实会话加载仍需宿主验证。
+必须指定 Agent，并按用户明确的规则修改授权操作。
+
+安装或更新规则时（包括安装 Skill、补齐依赖时的可选规则安装），先按
+[修改规则](references/agent-rules.md#修改规则)在**用户可见的回复正文**中展示目标文件、
+作用范围、是新增还是替换，以及用代码块展示的**完整规则原文**；发送完这段回复，
+再按顺序提供“安装规则块（推荐）／暂不安装”；更新时为“更新规则块（推荐）／暂不更新”。
+安装或更新始终放在第一项并标注推荐。工具输出、文件链接或作用摘要不算正文预览。
+用户对已展示的同一目标与完整内容有明确授权时可沿用；目标或内容变化则重新展示并确认。
+
+手工修改默认不覆盖。写入不含开发 worktree 路径，真实会话加载仍需宿主验证。
 
 ## 边界（v2 非目标）
 

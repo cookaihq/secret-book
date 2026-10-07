@@ -6,10 +6,10 @@
 # 解释器版本由同目录 .python-version 钉死（3.13）：requires-python 只给下限，
 # 不同机器会各自选中不同解释器（本机 3.13、只有系统 3.9 的机器则 3.9），
 # 正是 ADR 0007 要消除的分叉。
-# lark-cli 是系统级外部程序，不由 uv 管理（缺失时脚本报错给安装指引）。
+# lark-cli 不由 uv 管理；缺失时由 Agent 按 SKILL.md 自动安装并复检。
 [project]
 name = "secret-book"
-version = "2.5.1"
+version = "2.5.2"
 description = "令牌管理 CLI（飞书多维表格后端）的运行时环境锁定"
 requires-python = ">=3.9"
 dependencies = []
