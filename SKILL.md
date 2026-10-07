@@ -1,8 +1,9 @@
 ---
 name: secret-book
-version: 2.5.2
+metadata:
+  version: "2.5.3"
 description: >-
-  v2.5.2｜令牌：把 token、API key、账号密码、OSS/数据库等配置组保存到用户自己的
+  v2.5.3｜令牌：把 token、API key、账号密码、OSS/数据库等配置组保存到用户自己的
   飞书令牌表里，agent 按意图或精确 ID 查询取用，取用输出一律掩码；本机可保存多套
   有名称的令牌配置，并持久切换唯一的当前配置（默认配置）。当用户说
   "存一下这个 token/API key/密钥/凭证"、"用我存的 xx 推送/登录/调用"、"我的
@@ -60,7 +61,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$SkillDir/scripts/check
 ## 第 1 步：明确本次角色和目标
 
 每次调用必读 [角色与首次使用](references/roles.md) 的“确定角色”和“检查实际状态”，
-再读取当前角色部分。按用户明确角色 → 同一未完成任务 → Agent 对明确任务的判断 →
+再读取当前角色部分；安装或依赖准备完成后的下一步建议也按此入口分流。
+按用户明确角色 → 同一未完成任务 → Agent 对明确任务的判断 →
 信息不足时请用户选择的顺序处理。Agent 判断时用一句话说明角色及目标，无需重复等待确认。
 
 管理员管理表；维护者维护已有记录；使用者只读远端表并取用；接入开发者可直接做本地
@@ -95,7 +97,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$SkillDir/scripts/check
    原生 Windows 的 npm 包包含 `node_modules/@larksuite/cli/bin/lark-cli.exe`，
    将该实际目录加入进程 PATH，确保 Python 子进程也能启动原生程序；只有 `.cmd` 包装器
    能在 PowerShell 运行，不足以证明 Secret Book 可调用。报告实际版本和路径后继续原任务。
-5. 安装完成后，按原有流程检查 profile 并引导本人登录、确认身份；保留已有配置和登录态。
+5. 安装完成后，进入[飞书账号选择与登录](#飞书账号选择与登录)，引导本人登录、确认身份；保留已有配置和登录态。
    安装成功不代表已登录，也不代替身份、凭证保存或远端写入的授权。
 
 ## 命令入口
@@ -257,21 +259,73 @@ SECRET_BOOK_CONFIGS_JSON='{"schema_version":1,"active_id":"cfg_xxxxxxxxxx","conf
 目标 profile；禁止调用 `lark-cli profile use`，也不能用全局 active profile 代替配置中的
 profile。
 
+- `error_kind` 为 `feishu_cli_context_unbound`，或 CLI 直接报告某 Agent 上下文未绑定时，
+  先按 [Lark CLI 上下文检查](references/cli.md#lark-cli-上下文检查)处理；不要当成账号未登录继续发起授权。
 - 全局命名配置需要改绑身份时，使用 `config rebind`，再次经过两阶段确认。
 - 项目配置仅缺两个身份固定值时，先向用户展示 `observed_identity`；确认后只把
   `SECRET_BOOK_FEISHU_APP_ID`、`SECRET_BOOK_FEISHU_USER_OPEN_ID` 写回
   `config_write_target.path` 指定的同一层，禁止写到其它层补齐。
-- profile 未登录或身份不匹配时，按 `fix_actions` 中 `kind` 为 `auth_split_flow` 的动作
+- profile 未登录或身份不匹配时，先按[飞书账号选择与登录](#飞书账号选择与登录)展示选择。
+  用户选择恢复原账号时，按 `fix_actions` 中 `kind` 为 `auth_split_flow` 的动作
   完成登录后重试。这个动作的 `profile`、`start_argv_template`、
   `resume_argv_template` 和 `status_argv` 是同一轮授权的机器可读约束；不要把它替换成
   阻塞式裸 `auth login`。
+
+### 飞书账号选择与登录
+
+安装后的登录引导、首次连接、登录失效、身份不符和用户要求登录其他账号时，统一走本节。
+仅安装完成不能报告飞书已可用；纯说明与本地开发无需登录。
+
+1. 在本次业务的实际环境中运行 `lark-cli profile list`，对候选执行
+   `lark-cli auth status --json --profile <name>`（本地检查，单次超时 30 秒，不加 `--verify`）。
+   只把 user 身份有效的条目列为已登录账号；检查失败报告具体原因，不当成空列表。
+   候选为空时也需检查上下文：已有或选定目标 profile 时仍执行上述 status；尚未选定时，
+   可仅用 `lark-cli auth status --json` 做本地上下文诊断，其结果不能用作业务身份。
+   出现上下文未绑定错误时先走上述上下文检查，处理完成前不创建 profile、绑定应用或发起登录。
+   不清洗宿主环境变量或借用其他环境的登录态，不按 CLI 的 active 标记认定业务当前账号。
+2. **先在回复正文说明实际状态，再提供选项**：展示可用账号的姓名、profile 和应用；
+   已有令牌配置时展示其期望身份，有差异则同时展示实际身份。未知姓名如实标记，
+   不把 profile 名或身份预设冒充账号。按下表排序，登录或使用账号放在第一项并标注推荐。
+   若当前环境需要 `config bind`，在选项前说明选择登录将绑定的实际来源、应用、目标环境、
+   是否替换绑定，以及允许 user 身份访问本人资源（`user-default`）。对同一明确预览的
+   登录选择可作为绑定意图与身份预设的确认；方案变化后重新展示并确认。
+   `user-default` 是身份预设，不是账号；Secret Book 的账号选项不提供 `bot-only`。
+
+   | 实际情况 | 依次提供的选项 |
+   | --- | --- |
+   | 首次使用，没有有效 user 登录（包括无 profile 或仅有 bot 身份） | 登录飞书账号（推荐）／暂不登录 |
+   | 已核实当前配置对应账号可用，或首次使用只有一个可用账号 | 使用当前账号：〈姓名〉（推荐）／登录其他账号／暂不继续 |
+   | 首次使用有多个可用账号，尚未选定 | 选择已登录账号（推荐）／登录其他账号／暂不继续；第一项继续展示实际候选供选择 |
+   | 已有配置绑定的账号过期、缺失或身份不符 | 重新登录原账号（推荐）／登录其他账号／暂不继续；有合适的已登录候选时另提供“选择已登录账号并确认改绑” |
+
+   用户已明确选择账号或要求登录其他账号时，直接推进对应分支；同一未完成授权按下节续接。
+   选择暂不登录／继续时停止需要飞书身份的步骤，保留任务进度，不自动发起授权或访问表。
+3. 用户选择登录后，依据当前 CLI 的 `--help` 使用实际支持的应用准备入口，
+   需要绑定时执行已确认的方案并显式传 `--identity user-default`；不因检测到 Hermes 等环境就
+   覆盖绑定或强制初始化另一应用。需要新应用或持久保存应用凭据时另按实际影响取得授权。
+4. 首次登录或登录其他账号需新建 profile 时，使用用户明确指定的名称；未指定时直接使用
+   **`secret-book-feishu`**，无需为默认名另行询问。应用仍按上面的流程确认。
+   已有配置的修复、原账号重新登录和同一授权续接沿用原 profile，默认名只用于未指定名称的新建流程。
+   同名 profile 已存在时先核对其应用、账号和用途，适合本次已选身份才复用；被其他账号或应用占用时，
+   请用户另定名称。不覆盖其他账号登录态，不用 `profile use` 或 `profile add --use` 切换全局状态。
+   按当前 CLI 帮助准备好目标 profile 后，执行下节的 split-flow。首次登录没有脚本动作时，
+   使用下节明确列出的命令；登录其他账号则为新目标固定同一组 start/resume/status 参数，
+   不把旧配置的修复动作静默改指新账号。已有授权请求时沿用下节的续接与重新授权约束。
+   profile 设置成功并回读后，在回复正文告知实际名称，并明确提示：**“这个名字可以修改，
+   之后告诉我新名称即可。”** 仍在等待授权或创建失败时，如实报告待完成状态。
+5. 登录完成后读取实际用户名、profile、`app_id` 和 `open_id`，按本节上方的两阶段流程
+   展示并确认身份，再连接表。已有令牌配置换账号必须确认改绑并写回原来源，不能直接重试
+   仍固定旧身份的业务命令；实际登录与用户选择不符时停止，不自动接受浏览器当前账号。
+
+用户之后要求改名时，核对当前 CLI 的 `profile rename --help`，并按原来源更新受影响的
+Secret Book profile 引用、回读实际身份；飞书账号和应用不因改名而更换。
 
 ### profile 授权的 split-flow
 
 `auth_split_flow` 必须按下面的阶段推进，用户文字本身不能证明本机登录已成功：
 
 1. `AUTH_REQUEST_CREATED`：从动作的 `profile` 确定目标 profile。若该字段是
-   `<profile-name>`，先选定一个 profile 名称，并把它固定用于本轮所有命令。执行
+   `<profile-name>`，先按上节的命名规则和应用准备流程确定 profile，再把它固定用于本轮所有命令。执行
    `start_argv_template`，即 `lark-cli auth login --profile <profile> --domain base
    --no-wait --json`。如果上游错误返回明确的 `missing_scopes`，只请求本次操作需要的
    最小 scope。
@@ -307,13 +361,16 @@ CLI 版本和授权请求生命周期。不得连续盲目重试，也不得立�
 
 先按 [当前角色的首次使用流程](references/roles.md) 判定本次需要哪种准备。
 使用者和维护者连接已有表；管理员在明确授权后才新建或接管；开发者可不配置真实表。
-需要访问飞书时才用 `lark-cli profile list` 确认本人 profile，并确定表目标和配置名称。
+已有明确目标时推荐对应路径；目标未明时先了解本次用途及是否已有表，再给出建议。
+需要访问飞书时先完成[飞书账号选择与登录](#飞书账号选择与登录)，再确定表目标和配置名称。
 
-- 新建：`init-create --lark-profile <profile> [--base-name 令牌表]`
-- 接管：`init-adopt --url <多维表格 URL> --lark-profile <profile>`
-- 只读连接：`init-connect --url <多维表格 URL> --lark-profile <profile>`；需要本次任务参数。
+| 本次目标 | 入口 |
+| --- | --- |
+| 使用已有表，包括换电脑或重装后继续使用 | `init-connect --url <多维表格 URL> --lark-profile <profile>`，先只读检查；本机连接另经确认保存 |
+| 管理员已明确要接管或补齐已有表结构 | 先用 `init-connect` 检查并展示差异，再按已有授权运行 `init-adopt --url <多维表格 URL> --lark-profile <profile>` |
+| 用户已明确要新建令牌表 | 管理员运行 `init-create --lark-profile <profile> [--base-name 令牌表]` |
 
-新建和接管是管理员操作；只读连接适用于管理员、维护者和使用者。第一次都进入身份确认，用户确认后追加 `--confirm-identity` 重跑。
+这些命令均按角色规范携带本次任务参数。新建和接管是管理员操作；只读连接适用于管理员、维护者和使用者。第一次都进入身份确认，用户确认后追加 `--confirm-identity` 重跑。
 `init-create` 创建 Base、`credentials` 表和 9 个字段；`init-adopt` 校验字段，缺列
 会在全部已有字段校验通过后补建，类型不符时不创建任何字段并拒绝接管；
 `visible_to` 必须是人员多选字段。成功输出中包含带完整 `uv run --project ...

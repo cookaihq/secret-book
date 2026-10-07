@@ -194,6 +194,12 @@ class Session:
         if isinstance(identity, dict):
             pending["observed_identity"] = {key: value for key, value in identity.items()
                                             if key in IDENTITY_KEYS and isinstance(value, str)}
+        context = guidance.get("cli_context")
+        if isinstance(context, dict):
+            pending["cli_context"] = {key: context[key] for key in ("source", "agent")
+                                      if isinstance(context.get(key), str)}
+            if type(context.get("matches_agent")) is bool:
+                pending["cli_context"]["matches_agent"] = context["matches_agent"]
         if guidance.get("schema") == "secret-book.record-maintenance/v1":
             pending["review"] = _metadata(guidance["review"],
                 {"resource_namespace", "record_id", "name", "service", "account", "operation"})

@@ -6,7 +6,8 @@
 
 param(
     [switch]$Pull,
-    [switch]$Help
+    [switch]$Help,
+    [string]$ReadVersion
 )
 
 $ErrorActionPreference = 'Continue'
@@ -85,20 +86,42 @@ function Invoke-GitFetchWithTimeout([string]$Root) {
 }
 
 function Get-SkillVersion([string]$Text) {
-    if ($null -eq $Text) { return $null }
-    $inFrontmatter = $false
-    foreach ($line in ($Text -split "`r?`n")) {
-        $trimmed = $line.Trim()
-        if (-not $inFrontmatter) {
-            if ($trimmed -eq '---') { $inFrontmatter = $true; continue }
-            if ($trimmed -ne '') { return $null }
+    $lines = $Text -split "`r?`n"
+    if ($lines.Count -lt 2 -or $lines[0] -cne '---') { return $null }
+    $old = $null; $new = $null; $maps = 0; $inMetadata = $false; $closed = $false
+    foreach ($line in $lines[1..($lines.Count - 1)]) {
+        if ($line -cmatch '^(---|\.\.\.)[ \t]*$') { $closed = $true; break }
+        if ($line -cmatch '^metadata:') {
+            $maps++
+            if ($maps -gt 1 -or $line -cnotmatch '^metadata:[ \t]*(#.*)?$') { return $null }
+            $inMetadata = $true
             continue
         }
-        if ($trimmed -eq '---' -or $trimmed -eq '...') { break }
-        $match = [regex]::Match($line, '^\s*version\s*:\s*["'']?([^"''\s#]+)')
-        if ($match.Success) { return $match.Groups[1].Value }
+        if ($line -cmatch '^[^ \t#]') { $inMetadata = $false }
+        $isOld = $line -cmatch '^version:'
+        $isNew = $inMetadata -and $line -cmatch '^  version:'
+        if (-not $isOld -and -not $isNew) { continue }
+        $value = $line.Substring($line.IndexOf(':') + 1).Trim()
+        $match = [regex]::Match($value, '^(?:"([^"\r\n]*)"|''([^''\r\n]*)''|([^\s#"'']+))[ \t]*(?:#.*)?$')
+        if (-not $match.Success) { return $null }
+        $value = @($match.Groups[1..3] | Where-Object { $_.Success })[0].Value
+        if ($value -cnotmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$') { return $null }
+        $pre = $Matches[4]
+        if ($pre) {
+            foreach ($part in ($pre -split '\.')) { if ($part -cmatch '^0[0-9]+$') { return $null } }
+        }
+        if ($isOld) {
+            if ($null -ne $old) { return $null }
+            $old = $value
+        } else {
+            if ($null -ne $new) { return $null }
+            $new = $value
+        }
     }
-    return $null
+    if (-not $closed -or ($null -eq $old -and $null -eq $new)) { return $null }
+    if ($null -ne $old -and $null -ne $new -and $old -cne $new) { return $null }
+    if ($null -ne $new) { return $new }
+    return $old
 }
 
 function Get-FileVersion([string]$Path) {
@@ -128,6 +151,14 @@ function Invoke-Pull([string]$Root, [string]$Name, [string]$SkillDir) {
         $script:PullExitCode = 1
         return
     }
+    $Prefix = Invoke-GitText @('-C', $SkillDir, 'rev-parse', '--show-prefix')
+    $SkillMdRel = if ($Prefix) { "$($Prefix.Trim().TrimEnd('/'))/SKILL.md" } else { 'SKILL.md' }
+    $RemoteText = Invoke-GitText @('-C', $Root, 'show', "origin/main:$SkillMdRel")
+    if (-not (Get-FileVersion (Join-Path $SkillDir 'SKILL.md')) -or -not (Get-SkillVersion $RemoteText)) {
+        Write-Output "[$Name] invalid-metadata：拒绝拉取版本缺失、非法或冲突的 Skill"
+        $script:PullExitCode = 1
+        return
+    }
     & git -C $Root merge --ff-only origin/main
     if ($LASTEXITCODE -ne 0) {
         Write-Output "[$Name] 拉取失败：merge --ff-only 未成功，工作树未改变"
@@ -140,6 +171,12 @@ function Invoke-Pull([string]$Root, [string]$Name, [string]$SkillDir) {
 }
 
 if ($Help) { Write-Usage; exit 0 }
+if ($ReadVersion) {
+    $Version = Get-FileVersion $ReadVersion
+    if (-not $Version) { Write-Error "invalid-metadata: $ReadVersion"; exit 1 }
+    Write-Output $Version
+    exit 0
+}
 
 $ScriptPath = [IO.Path]::GetFullPath($MyInvocation.MyCommand.Path)
 $ScriptsDir = Split-Path -Parent $ScriptPath
@@ -212,6 +249,9 @@ $VersionClause = ''
 if ($LocalVersion -and $RemoteVersion) {
     if ($LocalVersion -eq $RemoteVersion) { $VersionClause = "，版本 v$LocalVersion（未变）" }
     else { $VersionClause = "，版本 v$LocalVersion → v$RemoteVersion" }
+} else {
+    Write-Output "[$Name] invalid-metadata：本地或远端 Skill 版本缺失、非法或冲突；本次不建议拉取，按当前版本继续"
+    exit 0
 }
 
 Write-Output "[$Name] 检测到更新：本地落后远端 $Behind 个提交$VersionClause"

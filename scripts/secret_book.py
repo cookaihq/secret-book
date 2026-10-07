@@ -262,6 +262,16 @@ def _auth_split_flow_action(profile: str, *, profile_placeholder: bool = False,
 
 
 def _profile_fix_actions(error_kind: str, profile: str, snapshot=None) -> list:
+    if error_kind == "feishu_cli_context_unbound":
+        return [{
+            "kind": "inspect_lark_context",
+            "description": (
+                "先核对实际宿主与 cli_context.source；不一致或宿主未知时先检查启动环境和 CLI 配置来源，"
+                "不要查找该 Agent 的凭据或发起登录。确实需要该上下文时，再按当前 CLI 帮助说明应用、"
+                "目标及 user-default 身份预设，经确认后绑定；修复后重跑原命令核对身份"
+            ),
+            "argv": ["lark-cli", "config", "bind", "--help"],
+        }]
     if error_kind == "feishu_profile_list_unavailable":
         return [{
             "kind": "inspect_lark_profiles",
@@ -360,13 +370,13 @@ def _guidance_write_target(snapshot, keys=None) -> dict:
 def _raise_profile_guidance(error_kind: str, reason: str, profile: str,
                             candidates: list, *, expected=None, observed=None,
                             snapshot=None, confirmation_token=None,
-                            write_keys=None) -> None:
+                            write_keys=None, cli_context=None) -> None:
     payload = {
         "schema_version": PROFILE_GUIDANCE_SCHEMA,
         "error_kind": error_kind,
         "reason": reason,
         "configured_profile": profile,
-        "config_write_target": _guidance_write_target(snapshot, write_keys),
+        "config_write_target": None if cli_context else _guidance_write_target(snapshot, write_keys),
         "candidates": candidates,
         "fix_actions": _profile_fix_actions(error_kind, profile, snapshot),
         "expected_identity": expected,
@@ -374,6 +384,8 @@ def _raise_profile_guidance(error_kind: str, reason: str, profile: str,
     }
     if confirmation_token is not None:
         payload["confirmation_token"] = confirmation_token
+    if cli_context is not None:
+        payload["cli_context"] = cli_context
     raise ProfileGuidance(payload)
 
 def die(msg: str, code: int = 1) -> "NoReturn":  # noqa: F821
@@ -917,9 +929,36 @@ def _lark_exec(cmd: list, kind: str, what: str) -> subprocess.CompletedProcess:
     die("内部错误：lark-cli 重试循环未正常退出")  # 不可达，仅为控制流完整
 
 
+def _check_lark_context(proc, profile: str, candidates: list, *, snapshot=None) -> None:
+    """Recognize the CLI's config error, never infer an active host from env vars."""
+    if proc.returncode == 0:
+        return
+    envelope = _extract_envelope(proc.stderr or "") or _extract_envelope(proc.stdout or "")
+    error = (envelope or {}).get("error")
+    if not isinstance(error, dict) or error.get("type") != "config":
+        return
+    match = re.fullmatch(
+        r"(hermes|openclaw|lark-channel) context detected but lark-cli is not bound to it\.?",
+        str(error.get("message", "")).strip(), re.IGNORECASE,
+    )
+    if match is None:
+        return
+    source = match.group(1).lower()
+    agent = _ACTIVE_TASK.context["agent"] if _ACTIVE_TASK is not None else None
+    context = {"source": source, "agent": agent,
+               "matches_agent": source == agent if agent is not None else None}
+    _raise_profile_guidance(
+        "feishu_cli_context_unbound",
+        f"Lark CLI 选择了 {source} 上下文但尚未绑定；实际宿主：{agent or '未提供，须从当前会话核对'}。"
+        "先核对上下文来源，再决定应用绑定；不能按普通账号未登录直接发起授权。",
+        profile, candidates, snapshot=snapshot, cli_context=context,
+    )
+
+
 def _capture_profile_identity(profile: str, *, snapshot=None) -> dict:
     """Read the local lark-cli profile identity without accessing Feishu APIs."""
     proc = _lark_exec(["lark-cli", "profile", "list"], "read", "profile list")
+    _check_lark_context(proc, profile, [], snapshot=snapshot)
     profiles = None
     if proc.stdout.strip():
         try:
@@ -939,6 +978,13 @@ def _capture_profile_identity(profile: str, *, snapshot=None) -> dict:
     } for item in profiles if isinstance(item, dict)]
     entry = next((item for item in profiles
                   if isinstance(item, dict) and item.get("name") == profile), None)
+    # Even an empty profile list can hide an unbound Agent workspace. Check the
+    # CLI's local auth error before offering profile creation or user login.
+    proc = _lark_exec(
+        ["lark-cli", "auth", "status", "--json", "--profile", profile],
+        "read", "auth status",
+    )
+    _check_lark_context(proc, profile, candidates, snapshot=snapshot)
     if entry is None:
         _raise_profile_guidance(
             "feishu_profile_not_found",
@@ -962,10 +1008,6 @@ def _capture_profile_identity(profile: str, *, snapshot=None) -> dict:
             snapshot=snapshot,
         )
 
-    proc = _lark_exec(
-        ["lark-cli", "auth", "status", "--json", "--profile", profile],
-        "read", "auth status",
-    )
     status = {}
     if proc.stdout.strip():
         try:

@@ -3,6 +3,35 @@ import json
 import pytest
 
 
+@pytest.mark.parametrize("source", ["hermes", "openclaw", "lark-channel"])
+@pytest.mark.parametrize("stdout", [False, True])
+def test_context_guidance_uses_cli_evidence_without_guessing_unknown_host(cli, source, stdout):
+    state = json.loads(cli.state_path.read_text(encoding="utf-8"))
+    state["auth_errors"] = {"work-profile": {
+        "type": "config", "subtype": "not_configured",
+        "message": f"{source} context detected but lark-cli is not bound to it",
+    }}
+    state["auth_error_stdout"] = stdout
+    cli.state_path.write_text(json.dumps(state), encoding="utf-8")
+    result = cli("config", "save", "--name", "test", "--app-token", "app_test",
+                 "--table-id", "tbl_test", "--lark-profile", "work-profile")
+    assert result.returncode == 3, result.stderr
+    guidance = json.loads(result.stdout)
+    assert guidance["error_kind"] == "feishu_cli_context_unbound"
+    assert guidance["cli_context"] == {"source": source, "agent": None, "matches_agent": None}
+    assert all(action["kind"] != "auth_split_flow" for action in guidance["fix_actions"])
+
+
+def test_ambient_hermes_variable_alone_does_not_override_valid_cli_identity(cli):
+    result = cli("config", "save", "--name", "test", "--app-token", "app_test",
+                 "--table-id", "tbl_test", "--lark-profile", "work-profile",
+                 extra_env={"HERMES_HOME": "some-other-installation"})
+    assert result.returncode == 3
+    guidance = json.loads(result.stdout)
+    assert guidance["status"] == "confirmation_required"
+    assert guidance["observed_identity"]["app_id"] == "cli_test_work"
+
+
 def _save_work_config(cli):
     args = (
         "config", "save",

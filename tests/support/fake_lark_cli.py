@@ -66,6 +66,11 @@ def main():
         return 0
     if argv[:2] == ["auth", "status"]:
         profile = _profile(argv)
+        auth_error = state.get("auth_errors", {}).get(profile)
+        if auth_error:
+            stream = sys.stdout if state.get("auth_error_stdout") else sys.stderr
+            print(json.dumps({"ok": False, "error": auth_error}), file=stream)
+            return 3
         auth_exit = state.get("auth_exit", {}).get(profile)
         if auth_exit:
             print(json.dumps({

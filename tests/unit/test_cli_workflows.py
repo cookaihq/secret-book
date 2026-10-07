@@ -31,6 +31,73 @@ def calls(cli):
     return [json.loads(line) for line in cli.log_path.read_text(encoding="utf-8").splitlines()] if cli.log_path.exists() else []
 
 
+@pytest.mark.parametrize("agent", ["codex", "claude-code", "workbuddy"])
+@pytest.mark.parametrize("profile_state", ["missing", "expired", "ready"])
+def test_cli_context_error_precedes_login_guidance_and_survives_resume(cli, agent, profile_state):
+    task_id = start(cli, agent=agent)
+    state = json.loads(cli.state_path.read_text(encoding="utf-8"))
+    if profile_state == "missing":
+        state["profiles"] = []
+    elif profile_state == "expired":
+        state["profiles"][0]["tokenStatus"] = "expired"
+    state["auth_errors"] = {"work-profile": {
+        "type": "config", "subtype": "not_configured",
+        "message": "hermes context detected but lark-cli is not bound to it",
+        "hint": "bind with an unrelated-secret-value",
+    }}
+    cli.state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    result = cli("init-connect", "--url", "https://example.feishu.cn/base/test",
+                 "--lark-profile", "work-profile", *flags(task_id, agent),
+                 extra_env={"HERMES_HOME": "private-install-path",
+                            "HERMES_GATEWAY_TOKEN": "synthetic-gateway-secret"})
+
+    assert result.returncode == 3, result.stderr
+    guidance = json.loads(result.stdout)
+    assert guidance["error_kind"] == "feishu_cli_context_unbound"
+    assert guidance["cli_context"] == {"source": "hermes", "agent": agent, "matches_agent": False}
+    assert guidance["config_write_target"] is None
+    assert [action["kind"] for action in guidance["fix_actions"]] == ["inspect_lark_context"]
+    assert calls(cli) == [["profile", "list"], ["auth", "status", "--json", "--profile", "work-profile"]]
+    recovered = status(cli, task_id, agent)
+    assert recovered["stage"] == "waiting"
+    assert recovered["pending"]["status"] == guidance["error_kind"]
+    assert recovered["pending"]["cli_context"] == guidance["cli_context"]
+    serialized = result.stdout + (cli.home / ".config/secret-book/workflows.json").read_text(encoding="utf-8")
+    for value in ("private-install-path", "synthetic-gateway-secret", "unrelated-secret-value"):
+        assert value not in serialized
+    assert not (cli.home / ".config/secret-book/.env").exists()
+
+
+def test_genuine_hermes_context_requires_explicit_binding_then_rechecks_identity(cli):
+    task_id = start(cli, agent="hermes")
+    state = json.loads(cli.state_path.read_text(encoding="utf-8"))
+    state["auth_errors"] = {"work-profile": {
+        "type": "config", "subtype": "not_configured",
+        "message": "hermes context detected but lark-cli is not bound to it",
+    }}
+    cli.state_path.write_text(json.dumps(state), encoding="utf-8")
+    command = ("init-connect", "--url", "https://example.feishu.cn/base/test",
+               "--lark-profile", "work-profile", *flags(task_id, "hermes"))
+    blocked = cli(*command)
+    assert blocked.returncode == 3
+    assert json.loads(blocked.stdout)["cli_context"]["matches_agent"] is True
+    assert not any(call[0] == "base" for call in calls(cli))
+
+    # Simulate an external, authorized correction without changing any actual environment.
+    del state["auth_errors"]
+    cli.state_path.write_text(json.dumps(state), encoding="utf-8")
+    pending = cli(*command)
+    assert pending.returncode == 3
+    confirmation = json.loads(pending.stdout)
+    assert confirmation["status"] == "confirmation_required"
+    assert confirmation["observed_identity"]["app_id"] == "cli_test_work"
+    assert not any(call[0] == "base" for call in calls(cli))
+    connected = cli(*command, "--confirm-identity", confirmation["confirmation_token"])
+    assert connected.returncode == 0, connected.stderr
+    assert json.loads(connected.stdout)["status"] == "connected_read_only"
+
+
 def test_ambiguous_role_requests_selection_before_login_or_state_write(cli):
     result = cli("workflow", "start", "--goal", "使用 Secret Book", "--agent", "codex",
                  extra_env={"FAKE_LARK_FAIL_ON_CALL": "1"})

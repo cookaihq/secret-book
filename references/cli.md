@@ -31,6 +31,24 @@ uv run --project "$SkillDir" "$SkillDir/scripts/secret_book.py" workflow start -
 
 完成目标后用 `workflow finish --id <task.id> --agent <实际宿主>` 关闭。取消用 `--outcome cancelled`，不回滚已经发生的操作。写入中断或结果不明时返回 `verification_required`，先核对实际表或文件；恢复方式见 [角色规范](roles.md#恢复)，不能直接重放或标记完成。
 
+## Lark CLI 上下文检查
+
+`secret-book.profile-guidance/v2` 的 `feishu_cli_context_unbound` 表示 CLI 明确返回 Agent 上下文未绑定；
+`cli_context.source` 来自 CLI 的配置错误，`agent` 来自实际任务上下文，`matches_agent` 表示两者是否同名。
+未提供宿主时后两项为 `null`，Agent 须按当前会话核对，不能从目录或环境变量推断。
+这类待办通过 `workflow status` 保留，可在修复环境后重跑原命令。
+
+先向用户说明实际宿主、CLI 来源及错误。两者不一致或实际宿主未知时，核对启动环境和来源选择机制；
+Windows 用户级变量可能被不同应用共同继承，存在 `HERMES_HOME` 不证明本轮在 Hermes 内运行。
+不要转去查找其他 Agent 的 `.env` / 应用密钥，也不要按普通未登录建议新建 profile 或反复发起授权。
+`fix_actions` 只提供读取当前 `config bind --help` 的检查入口，不构成执行绑定的授权。
+
+优先核实当前版本 CLI 是否有官方的来源选择机制；未提供时如实说明限制，不臆造 flag，
+不清洗 `HERMES_*` / `OPENCLAW_*` / `LARK_CHANNEL` 强制切换配置，也不自动修改用户级环境变量。
+用户确实要使用该 Agent 上下文时，再按 [账号选择与登录](../SKILL.md#飞书账号选择与登录)
+确认具体来源、应用、目标及 `user-default` 身份预设后处理绑定。修复后重新检查 profile、应用和用户身份，
+此前的上下文检查不能代替身份确认。这一分类针对 CLI 明确报告的未绑定错误；已有绑定的身份漂移仍由身份固定值校验处理。
+
 ## 常用命令
 
 | 操作 | 命令 |
