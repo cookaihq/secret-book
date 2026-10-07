@@ -1,6 +1,7 @@
 ---
 name: secret-book
-version: 2.5.2
+metadata:
+  version: "2.5.2"
 description: >-
   v2.5.2｜令牌：把 token、API key、账号密码、OSS/数据库等配置组保存到用户自己的
   飞书令牌表里，agent 按意图或精确 ID 查询取用，取用输出一律掩码；本机可保存多套

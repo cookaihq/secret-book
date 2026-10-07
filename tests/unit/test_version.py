@@ -16,7 +16,7 @@ def test_all_product_version_sources_match():
         )["package"] if package["name"] == "secret-book"
     )
     skill = (REPO / "SKILL.md").read_text(encoding="utf-8")
-    frontmatter_version = re.search(r"^version:\s*([^\s]+)$", skill, re.MULTILINE).group(1)
+    frontmatter_version = re.search(r"^metadata:\s*\n  version:\s*\"([^\"\s]+)\"$", skill, re.MULTILINE).group(1)
     description_version = re.search(r"^\s*v([0-9]+\.[0-9]+\.[0-9]+)｜", skill, re.MULTILINE).group(1)
 
     assert project_version == "2.5.2"
