@@ -102,7 +102,7 @@ function Get-SkillVersion([string]$Text) {
         $isNew = $inMetadata -and $line -cmatch '^  version:'
         if (-not $isOld -and -not $isNew) { continue }
         $value = $line.Substring($line.IndexOf(':') + 1).Trim()
-        $match = [regex]::Match($value, '^(?:"([^"\r\n]*)"|''([^''\r\n]*)''|([^\s#"'']+))[ \t]*(?:#.*)?$')
+        $match = [regex]::Match($value, '^(?:"([^"\r\n]*)"|''([^''\r\n]*)''|([^\s#"'']+))(?:[ \t]+#.*|[ \t]*)$')
         if (-not $match.Success) { return $null }
         $value = @($match.Groups[1..3] | Where-Object { $_.Success })[0].Value
         if ($value -cnotmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$') { return $null }
@@ -234,11 +234,6 @@ if (-not [Int32]::TryParse([string]$BehindText, [ref]$Behind)) {
     Write-Output "[$Name] 更新检查未完成（无法比对 origin/main）"
     exit 0
 }
-if ($Behind -eq 0) {
-    Write-Output "[$Name] 已是最新"
-    exit 0
-}
-
 $Prefix = (Invoke-GitText @('-C', $SkillDir, 'rev-parse', '--show-prefix'))
 if ($null -eq $Prefix) { $Prefix = '' } else { $Prefix = $Prefix.Trim().TrimEnd('/') }
 $SkillMdRel = if ($Prefix) { "$Prefix/SKILL.md" } else { 'SKILL.md' }
@@ -251,6 +246,11 @@ if ($LocalVersion -and $RemoteVersion) {
     else { $VersionClause = "，版本 v$LocalVersion → v$RemoteVersion" }
 } else {
     Write-Output "[$Name] invalid-metadata：本地或远端 Skill 版本缺失、非法或冲突；本次不建议拉取，按当前版本继续"
+    exit 0
+}
+
+if ($Behind -eq 0) {
+    Write-Output "[$Name] 已是最新（版本 v$LocalVersion）"
     exit 0
 }
 

@@ -317,11 +317,6 @@ do_check() {
     printf '[%s] 更新检查未完成（无法比对 origin/main）\n' "${NAME}"
     return 0
   fi
-  if [ "${behind}" -eq 0 ]; then
-    printf '[%s] 已是最新\n' "${NAME}"
-    return 0
-  fi
-
   # 6) 版本对比；格式错误必须可见，但仍不阻塞业务。
   if [ -n "${prefix}" ]; then
     skill_md_rel="${prefix}/SKILL.md"
@@ -343,6 +338,11 @@ do_check() {
     fi
   else
     printf '[%s] invalid-metadata：本地或远端 Skill 版本缺失、非法或冲突；本次不建议拉取，按当前版本继续\n' "${NAME}"
+    return 0
+  fi
+
+  if [ "${behind}" -eq 0 ]; then
+    printf '[%s] 已是最新（版本 v%s）\n' "${NAME}" "${local_ver}"
     return 0
   fi
 

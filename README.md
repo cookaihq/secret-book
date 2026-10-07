@@ -2,7 +2,7 @@
 
 Secret Book 帮你通过 Claude Code、Codex 或 WorkBuddy 管理和取用飞书多维表格中的凭证。你可以维护令牌表、登记 API Key 和账号配置，也可以选取已有凭证，确认后保存到业务 Skill／Plugin 的本机配置，或仅供一次命令使用。
 
-2.5.3 补齐首次登录与账号选择：未登录时推荐登录飞书账号，已有账号时也可选择登录其他账号。缺少 Lark CLI 时仍由 Agent 自动安装并检查可用。
+2.5.4 在安装完成后先介绍四个角色各自的用法，再让你选择本次角色；随后按所选角色准备必要的登录、表连接或本地接入开发。
 
 ## 使用前需要知道
 
@@ -23,7 +23,7 @@ Secret Book 帮你通过 Claude Code、Codex 或 WorkBuddy 管理和取用飞书
 | **凭证使用者** | 给业务工具配置凭证、临时执行命令、复制单个值 | 已有表链接及读取权限；具体使用目标 |
 | **业务 Skill／Plugin 接入开发者** | 让自己的工具支持 Secret Book 配置保存与修复 | 待接入产物的代码和配置说明；本地设计与模拟测试无需真实凭证 |
 
-你可以直接点名角色，也可以请 Agent 根据明确任务先说明判断；拿不准时再让你选择。例如，“给这个 Plugin 配好 Key”属于凭证使用者，“为我开发的 Plugin 实现凭证接入”属于接入开发者。
+日常使用时，你可以直接点名角色，也可以请 Agent 根据明确任务先说明判断；拿不准时再让你选择。例如，“给这个 Plugin 配好 Key”属于凭证使用者，“为我开发的 Plugin 实现凭证接入”属于接入开发者。
 
 ```text
 请用 secret-book 处理这个任务：〈你的任务〉。先说明本次按哪类角色处理；信息不足时让我选择。本机没有配置时，请按该角色的首次使用说明引导我。
@@ -36,14 +36,16 @@ Secret Book 帮你通过 Claude Code、Codex 或 WorkBuddy 管理和取用飞书
 把下面一段发给你正在使用的 Claude Code、Codex 或 WorkBuddy：
 
 ```text
-请安装 secret-book：优先用 https://github.com/cookaihq/secret-book，网络故障时改用 https://cnb.cool/zhidateam/tannt/secret-book.git。保留已有配置，检查当前 Agent 能否发现和调用；缺少 Lark CLI 时自动安装并检查可用，再引导我完成必要的登录。
+请安装 secret-book：优先用 https://github.com/cookaihq/secret-book，网络故障时改用 https://cnb.cool/zhidateam/tannt/secret-book.git。保留已有配置，检查当前 Agent 能否发现和调用；缺少 Lark CLI 时自动安装并检查可用。安装完成后，先说明四个角色各自怎么使用，再让我选择本次角色。
 ```
 
 脚本支持 macOS、Linux 和原生 Windows（2.4.0 起）。原生 Windows 使用 PowerShell，无需 WSL。Agent 执行脚本需要 [uv](https://docs.astral.sh/uv/) >= 0.8；访问令牌表还需要 `lark-cli`、本人完成登录的飞书账号，以及飞书网络。安装或补齐依赖、准备访问飞书时，Agent 会联网从官方来源自动安装缺少的 Lark CLI，保留已有设置，检查可用后继续；无需安装宿主连接器。登录仍由你本人完成，安装成功不代表已经登录。下载或本机权限阻止安装时，Agent 会说明具体原因。
 
 Windows 写入配置需要支持文件访问权限的磁盘，例如 NTFS。安装和调用须在同一实际运行环境中进行；Windows 原生与 WSL 的依赖、登录和个人配置各自独立。只在飞书界面维护记录，或只讨论业务接入方案时，不必先建立本机令牌配置。
 
-安装后，选择当前宿主的入口，再发送本文中的请求：
+安装完成时，Agent 会先在回复正文介绍四个角色分别能做什么、怎样开始，再让你选择“令牌表管理员／凭证提供者或维护者／凭证使用者／业务 Skill 或 Plugin 接入开发者”。已有表或账号也会展示这份引导。你选择后才进入相应流程；暂不选择可以停在安装完成。角色表示这次的任务，之后可以切换。
+
+后续使用时，选择当前宿主的入口，再发送本文中的请求：
 
 | Agent | 调用入口 | 当前验证范围 |
 | --- | --- | --- |
@@ -258,7 +260,7 @@ Git 安装在 Windows 使用随包 PowerShell 检查，在 macOS/Linux/WSL 使�
 <!-- release-table:begin -->
 | 目标 | 版本 | Release |
 |---|---|---|
-| secret-book | 2.5.3 | [v2.5.3](https://github.com/cookaihq/secret-book/releases/tag/v2.5.3) |
+| secret-book | 2.5.4 | [v2.5.4](https://github.com/cookaihq/secret-book/releases/tag/v2.5.4) |
 <!-- release-table:end -->
 
 ## License
