@@ -278,6 +278,19 @@ def _profile_fix_actions(error_kind: str, profile: str, snapshot=None) -> list:
             "description": "修复 lark-cli 本地配置后重新列出 profile，再重试原命令",
             "argv": ["lark-cli", "profile", "list"],
         }]
+    if error_kind in {"feishu_profile_status_unknown", "feishu_profile_refresh_failed"}:
+        return [{
+            "kind": "inspect_profile_status",
+            "description": "无法确认用户身份状态；核对 lark-cli 版本和本地状态后续接原任务，不自动重新登录或改绑",
+            "argv": ["lark-cli", "auth", "status", "--json", "--profile", profile],
+        }]
+    if error_kind in {"feishu_network_error", "feishu_rate_limited", "feishu_permission_denied"}:
+        descriptions = {
+            "feishu_network_error": "检查网络与服务状态后续接原任务；不重新登录、不重发结果未知的写入",
+            "feishu_rate_limited": "请求已达到有界重试上限；稍后续接原任务，不重新登录或改绑",
+            "feishu_permission_denied": "核对本人对原表的权限和本次操作所需 scope；不切换身份或自动重新授权",
+        }
+        return [{"kind": "inspect_access_failure", "description": descriptions[error_kind]}]
     if error_kind == "feishu_identity_values_missing":
         source = getattr(snapshot, "source", None)
         if source == "process_env":
@@ -376,7 +389,10 @@ def _raise_profile_guidance(error_kind: str, reason: str, profile: str,
         "error_kind": error_kind,
         "reason": reason,
         "configured_profile": profile,
-        "config_write_target": None if cli_context else _guidance_write_target(snapshot, write_keys),
+        "config_write_target": (None if cli_context or error_kind in {
+            "feishu_profile_status_unknown", "feishu_profile_refresh_failed", "feishu_network_error",
+            "feishu_rate_limited", "feishu_permission_denied",
+        } else _guidance_write_target(snapshot, write_keys)),
         "candidates": candidates,
         "fix_actions": _profile_fix_actions(error_kind, profile, snapshot),
         "expected_identity": expected,
@@ -755,28 +771,19 @@ def require_backend(args) -> "FeishuBackend":
                  open_id=snapshot.feishu_user_open_id, source=snapshot.source,
                  config_id=snapshot.config_id, config_name=snapshot.config_name)
     observed = _capture_profile_identity(snapshot.lark_profile, snapshot=snapshot)
-    if (observed["app_id"] != snapshot.feishu_app_id
-            or observed["open_id"] != snapshot.feishu_user_open_id):
-        expected = {
-            "lark_profile": snapshot.lark_profile,
-            "app_id": snapshot.feishu_app_id,
-            "user": None,
-            "open_id": snapshot.feishu_user_open_id,
-        }
-        _raise_profile_guidance(
-            "feishu_identity_mismatch",
-            "当前 profile 实际身份与令牌配置固定的 appId/openId 不一致；拒绝访问令牌表",
-            snapshot.lark_profile,
-            observed.pop("_candidates"),
-            expected=expected,
-            observed=observed,
-            snapshot=snapshot,
-        )
+    expected = {
+        "lark_profile": snapshot.lark_profile,
+        "app_id": snapshot.feishu_app_id,
+        "user": None,
+        "open_id": snapshot.feishu_user_open_id,
+    }
+    _assert_profile_identity(expected, observed, snapshot=snapshot)
     return FeishuBackend(
         snapshot.app_token,
         snapshot.table_id,
         snapshot.lark_profile,
         snapshot.feishu_user_open_id,
+        identity=observed, snapshot=snapshot,
     )
 
 
@@ -874,27 +881,77 @@ def _extract_envelope(text: str) -> dict | None:
     return None
 
 
+def _lark_error(proc) -> dict:
+    envelope = _extract_envelope(proc.stderr or "") or _extract_envelope(proc.stdout or "")
+    error = (envelope or {}).get("error")
+    return error if isinstance(error, dict) else {}
+
+
+def _lark_failure_kind(proc) -> str:
+    # lark-cli v1.0.97 errs/subtypes.go: authentication and authorization are
+    # distinct. A refresh-server failure is not evidence of expired credentials.
+    error = _lark_error(proc)
+    category, subtype = error.get("type"), error.get("subtype")
+    if category == "authentication":
+        if subtype in ("token_missing", "token_invalid", "token_expired", "refresh_token_invalid",
+                       "refresh_token_expired", "refresh_token_revoked", "refresh_token_reused"):
+            return "feishu_profile_not_authenticated"
+        if subtype == "refresh_server_error":
+            return "feishu_profile_refresh_failed"
+    if category in ("authorization", "policy"):
+        return "feishu_permission_denied"
+    if category == "api" and subtype == "rate_limit":
+        return "feishu_rate_limited"
+    if category == "network" or (category == "api" and subtype == "server_error"):
+        return "feishu_network_error"
+    if not error and _transient_reason(proc, "请求"):
+        return "feishu_network_error"
+    return "feishu_profile_status_unknown"
+
+
+def _raise_lark_failure(proc, profile: str, what: str, *, candidates=None, snapshot=None) -> None:
+    _check_lark_context(proc, profile, candidates or [], snapshot=snapshot)
+    kind = _lark_failure_kind(proc)
+    messages = {
+        "feishu_profile_not_authenticated": "用户令牌缺失、过期或已撤销，需要完成本人登录",
+        "feishu_profile_refresh_failed": "自动刷新服务暂时失败，不能据此判定为未登录",
+        "feishu_permission_denied": "权限或访问策略拒绝，不能据此判定为未登录",
+        "feishu_rate_limited": "服务限流",
+        "feishu_network_error": "网络或服务暂时不可用",
+        "feishu_profile_status_unknown": "无法确认返回状态；核对 CLI 版本与本机配置",
+    }
+    # Upstream messages/hints can contain tokens or private response bodies.
+    # Only report our fixed classification, never echo the raw envelope.
+    _raise_profile_guidance(kind, f"lark-cli {what}：{messages[kind]}", profile,
+                            candidates or [], snapshot=snapshot)
+
+
 def _transient_reason(proc, what: str) -> str | None:
     """瞬时故障返回原因文本；确定性失败（鉴权、参数、业务报错）返回 None。"""
     envelope = _extract_envelope(proc.stderr or "") or _extract_envelope(proc.stdout or "")
-    err = (envelope or {}).get("error") or {}
-    message = " ".join(str(err.get("message") or "").split())
-    if err.get("type") == "network":
-        return f"lark-cli {what} 网络失败：{message[:300]}"
+    err = _lark_error(proc)
+    if err.get("type") == "network" and err.get("subtype") in (
+            None, "transport", "timeout", "tls", "dns", "server_error", "representation_changed"):
+        return f"lark-cli {what} 网络或服务暂时失败"
+    if err.get("type") == "api" and err.get("subtype") in ("rate_limit", "server_error"):
+        return f"lark-cli {what} 限流或服务暂时失败"
+    if (err.get("type") == "authentication" and err.get("subtype") == "refresh_server_error"
+            and err.get("retryable") is True):
+        return f"lark-cli {what} 自动刷新服务暂时失败"
     if envelope is not None:
         return None  # 有结构化分类且不是 network：确定性失败，重试必然同样失败
     tail = " ".join((proc.stderr or proc.stdout or "").split())[:300]
     if any(h in tail.lower() for h in TRANSIENT_HINTS):
-        return f"lark-cli {what} 疑似网络失败：{tail}"
+        return f"lark-cli {what} 疑似网络失败"
     return None
 
 
-def _lark_exec(cmd: list, kind: str, what: str) -> subprocess.CompletedProcess:
+def _lark_exec(cmd: list, kind: str, what: str, *, snapshot=None, profile="") -> subprocess.CompletedProcess:
     """执行一次 lark-cli，按 ADR 0006 处理瞬时故障。
 
     kind="read"：瞬时故障重试至多 LARK_MAX_ATTEMPTS 次，指数退避 2^n 秒。
     kind="write"：瞬时故障不重试，直接以 EXIT_AMBIGUOUS 终止（结果不明）。
-    确定性失败原样返回 CompletedProcess，由调用方按既有逻辑 die()。
+    确定性失败原样返回 CompletedProcess，由调用方提供对应的结构化引导。
     """
     if kind not in ("read", "write"):
         die(f"内部错误：未知的 lark-cli 调用类型 {kind}")
@@ -909,8 +966,12 @@ def _lark_exec(cmd: list, kind: str, what: str) -> subprocess.CompletedProcess:
             die("lark-cli 未安装或不在 PATH 中。请先安装 lark-cli 并完成 user 身份登录")
         except subprocess.TimeoutExpired:
             reason = f"lark-cli {what} 超过 {timeout}s 未返回"
-        except OSError as exc:  # 进程起不来（fork 失败、资源暂时不足等），算瞬时
-            reason = f"无法启动 lark-cli 进程：{exc}"
+            proc = subprocess.CompletedProcess(cmd, 1, "", json.dumps({
+                "ok": False, "error": {"type": "network", "subtype": "timeout"}}))
+        except OSError:  # 进程起不来（fork 失败、资源暂时不足等），算瞬时
+            reason = "无法启动 lark-cli 进程"
+            proc = subprocess.CompletedProcess(cmd, 1, "", json.dumps({
+                "ok": False, "error": {"type": "network", "subtype": "transport"}}))
         else:
             if proc.returncode == 0:
                 return proc
@@ -922,7 +983,8 @@ def _lark_exec(cmd: list, kind: str, what: str) -> subprocess.CompletedProcess:
                 "本 skill 不做盲重试（重发会造出重复记录/重复字段）。"
                 "请先用 list 核实是否已写入，再决定要不要重试。", EXIT_AMBIGUOUS)
         if attempt == LARK_MAX_ATTEMPTS - 1:
-            die(f"{reason}（已尝试 {LARK_MAX_ATTEMPTS} 次仍失败）")
+            profile = cmd[cmd.index("--profile") + 1] if "--profile" in cmd else profile
+            _raise_lark_failure(proc, profile, f"{what}（已尝试 {LARK_MAX_ATTEMPTS} 次）", snapshot=snapshot)
         wait = 2 ** attempt  # 1s、2s
         warn(f"{reason}；{wait}s 后重试（第 {attempt + 2}/{LARK_MAX_ATTEMPTS} 次尝试）")
         time.sleep(wait)
@@ -957,7 +1019,7 @@ def _check_lark_context(proc, profile: str, candidates: list, *, snapshot=None) 
 
 def _capture_profile_identity(profile: str, *, snapshot=None) -> dict:
     """Read the local lark-cli profile identity without accessing Feishu APIs."""
-    proc = _lark_exec(["lark-cli", "profile", "list"], "read", "profile list")
+    proc = _lark_exec(["lark-cli", "profile", "list"], "read", "profile list", snapshot=snapshot, profile=profile)
     _check_lark_context(proc, profile, [], snapshot=snapshot)
     profiles = None
     if proc.stdout.strip():
@@ -965,7 +1027,10 @@ def _capture_profile_identity(profile: str, *, snapshot=None) -> dict:
             profiles = json.loads(proc.stdout)
         except json.JSONDecodeError:
             pass
-    if proc.returncode != 0 or not isinstance(profiles, list):
+    if (proc.returncode != 0 or not isinstance(profiles, list)
+            or any(not isinstance(item, dict) or not isinstance(item.get("name"), str)
+                   or not item["name"] for item in profiles)
+            or len({item["name"] for item in profiles}) != len(profiles)):
         _raise_profile_guidance(
             "feishu_profile_list_unavailable",
             "无法从 lark-cli 读取有效的 profile 列表；拒绝访问令牌表",
@@ -982,7 +1047,7 @@ def _capture_profile_identity(profile: str, *, snapshot=None) -> dict:
     # CLI's local auth error before offering profile creation or user login.
     proc = _lark_exec(
         ["lark-cli", "auth", "status", "--json", "--profile", profile],
-        "read", "auth status",
+        "read", "auth status", snapshot=snapshot,
     )
     _check_lark_context(proc, profile, candidates, snapshot=snapshot)
     if entry is None:
@@ -993,44 +1058,37 @@ def _capture_profile_identity(profile: str, *, snapshot=None) -> dict:
             candidates,
             snapshot=snapshot,
         )
-    if entry.get("tokenStatus") != "valid":
-        _raise_profile_guidance(
-            "feishu_profile_not_authenticated",
-            f"profile 的本地 token 未就绪：{profile}",
-            profile,
-            candidates,
-            observed={
-                "lark_profile": profile,
-                "app_id": entry.get("appId"),
-                "user": entry.get("user"),
-                "open_id": None,
-            },
-            snapshot=snapshot,
-        )
-
+    if proc.returncode != 0:
+        _raise_lark_failure(proc, profile, "auth status", candidates=candidates, snapshot=snapshot)
     status = {}
     if proc.stdout.strip():
         try:
             status = json.loads(proc.stdout)
         except json.JSONDecodeError:
-            if proc.returncode == 0:
-                die(f"lark-cli auth status 未返回 JSON（profile={profile}）")
+            pass
     status_obj = status if isinstance(status, dict) else {}
     identities = status_obj.get("identities")
     identities_obj = identities if isinstance(identities, dict) else {}
     raw_user = identities_obj.get("user")
     user = raw_user if isinstance(raw_user, dict) else {}
+    # auth status is the later snapshot. A refresh between these local reads
+    # can legitimately make profile list's tokenStatus stale.
     ready = (
         proc.returncode == 0
         and status_obj.get("identity") == "user"
-        and user.get("status") == "ready"
         and user.get("available") is True
-        and user.get("tokenStatus") == "valid"
+        and (user.get("status"), user.get("tokenStatus")) in (
+            ("ready", "valid"), ("needs_refresh", "needs_refresh"),
+        )
+        and entry.get("tokenStatus") in (None, "", "valid", "needs_refresh", "expired")
     )
     if not ready:
+        missing = (proc.returncode == 0 and user.get("status") == "missing"
+                   and user.get("available") is False
+                   and user.get("tokenStatus") in (None, "", "missing", "expired"))
         _raise_profile_guidance(
-            "feishu_profile_not_authenticated",
-            f"profile 的本地用户身份未就绪：{profile}",
+            "feishu_profile_not_authenticated" if missing else "feishu_profile_status_unknown",
+            f"profile 没有有效用户登录：{profile}" if missing else f"无法确认 profile 的用户身份状态：{profile}",
             profile,
             candidates,
             observed={
@@ -1044,14 +1102,39 @@ def _capture_profile_identity(profile: str, *, snapshot=None) -> dict:
     app_id = entry.get("appId")
     open_id = user.get("openId")
     if not isinstance(app_id, str) or not app_id or not isinstance(open_id, str) or not open_id:
-        die(f"lark-cli 未提供完整的 appId/openId，无法确认 profile 身份：{profile}")
+        _raise_profile_guidance("feishu_profile_status_unknown", "lark-cli 未提供完整的 appId/openId",
+                                profile, candidates, snapshot=snapshot)
     return {
         "lark_profile": profile,
         "app_id": app_id,
         "user": entry.get("user"),
         "open_id": open_id,
         "_candidates": candidates,
+        "_needs_refresh": user["tokenStatus"] == "needs_refresh",
     }
+
+
+def _assert_profile_identity(expected: dict, observed: dict, *, snapshot=None) -> None:
+    if any(expected[key] != observed[key] for key in ("app_id", "open_id")):
+        _raise_profile_guidance(
+            "feishu_identity_mismatch",
+            "当前 profile 实际身份与已确认的 appId/openId 不一致；拒绝继续访问令牌表",
+            expected["lark_profile"], observed["_candidates"], snapshot=snapshot,
+            expected={k: v for k, v in expected.items() if not k.startswith("_")},
+            observed={k: v for k, v in observed.items() if not k.startswith("_")},
+        )
+
+
+def _recheck_profile_identity(identity: dict, *, snapshot=None) -> dict:
+    """Recheck after a user API call, including a refresh hidden inside the CLI."""
+    refreshed = _capture_profile_identity(identity["lark_profile"], snapshot=snapshot)
+    _assert_profile_identity(identity, refreshed, snapshot=snapshot)
+    if refreshed["_needs_refresh"]:
+        _raise_profile_guidance(
+            "feishu_profile_refresh_failed", "用户 API 调用后仍无法确认自动刷新完成；保留原任务等待排查",
+            identity["lark_profile"], refreshed["_candidates"], snapshot=snapshot,
+        )
+    return refreshed
 
 
 def _identity_confirmation_token(identity: dict) -> str:
@@ -1084,12 +1167,14 @@ class FeishuBackend:
     """飞书多维表格后端，经 lark-cli。所有方法只吞吐 {字段名: 字符串} 平面记录。"""
 
     def __init__(self, app_token: str, table_id: str, profile: str = "",
-                 user_open_id: str = ""):
+                 user_open_id: str = "", *, identity=None, snapshot=None):
         self.app_token = app_token
         self.table_id = table_id
         # 空 = 不传 --profile，沿用 lark-cli 当前 active profile
         self.profile = profile or ""
         self.user_open_id = user_open_id
+        self.snapshot = snapshot
+        self.identity = identity
 
     def _profile_args(self) -> list:
         return ["--profile", self.profile] if self.profile else []
@@ -1114,19 +1199,28 @@ class FeishuBackend:
             kind = "read"
         else:
             die(f"内部错误：lark-cli 子命令 {shortcut} 未在读/写集合中归类")
+        if self.identity and kind == "write":
+            observed = _capture_profile_identity(self.profile, snapshot=self.snapshot)
+            _assert_profile_identity(self.identity, observed, snapshot=self.snapshot)
+            self.identity = observed
+        if self.identity and self.identity["_needs_refresh"] and shortcut != "+field-list":
+            # Only metadata from the already selected table may trigger refresh.
+            # No credential record or mutation is sent until identity is rechecked.
+            self._run("+field-list", [])
         cmd = ["lark-cli", "base", shortcut, "--as", "user", "--format", "json",
                *self._profile_args(),
                "--base-token", self.app_token, "--table-id", self.table_id, *extra]
-        proc = _lark_exec(cmd, kind, shortcut)
+        proc = _lark_exec(cmd, kind, shortcut, snapshot=self.snapshot)
         if proc.returncode != 0:
-            die(f"lark-cli {shortcut} 失败 (exit {proc.returncode}){self._profile_note()}: "
-                f"{proc.stderr.strip()[:500]}")
+            _raise_lark_failure(proc, self.profile, shortcut, snapshot=self.snapshot)
         try:
             payload = json.loads(proc.stdout) if proc.stdout.strip() else {}
         except json.JSONDecodeError:
             die(f"lark-cli {shortcut} 返回非 JSON 输出（前 200 字符）: {proc.stdout[:200]}")
         if not isinstance(payload, dict):
             die(f"lark-cli {shortcut} 返回的 JSON 不是对象")
+        if self.identity:
+            self.identity = _recheck_profile_identity(self.identity, snapshot=self.snapshot)
         return payload
 
     @staticmethod
@@ -1925,7 +2019,7 @@ def cmd_init_create(args) -> None:
     # 建 Base 是写操作：超时后可能已经建出一个 Base，重发会造出第二个（规则 4）
     proc = _lark_exec(cmd, "write", "+base-create")
     if proc.returncode != 0:
-        die(f"+base-create 失败 (exit {proc.returncode}): {proc.stderr.strip()[:500]}")
+        _raise_lark_failure(proc, profile, "+base-create")
     try:
         payload = json.loads(proc.stdout)
     except json.JSONDecodeError:
@@ -1945,6 +2039,10 @@ def cmd_init_create(args) -> None:
         "+base-create 返回的 table_id/id",
     )
     _task_target(app_token=app_token, table_id=table_id)
+    # There is no table to probe before a new Base exists. Its authorized user
+    # request uses the CLI's own refresh; preserve the result before rechecking.
+    # The workflow write journal prevents replay if this verification fails.
+    _recheck_profile_identity(identity)
     print(proc.stdout.rstrip())
     confirmation = _identity_confirmation_token(identity)
     info("令牌表已创建。与用户确认配置名称和表定位后，运行下一行命令保存令牌配置：")
@@ -1970,13 +2068,13 @@ def _config_save_handoff(app_token: str, table_id: str, profile: str,
     return shlex.join(argv)
 
 
-def _resolve_table_url(url: str, profile: str, user_open_id: str = "") -> FeishuBackend:
+def _resolve_table_url(url: str, profile: str, identity: dict) -> FeishuBackend:
     profile_args = ["--profile", profile] if profile else []
     proc = _lark_exec(["lark-cli", "base", "+url-resolve", "--as", "user",
                        "--format", "json", *profile_args, "--url", url],
                       "read", "+url-resolve")
     if proc.returncode != 0:
-        die(f"+url-resolve 失败 (exit {proc.returncode}): {proc.stderr.strip()[:500]}")
+        _raise_lark_failure(proc, profile, "+url-resolve")
     try:
         data = json.loads(proc.stdout)
     except json.JSONDecodeError:
@@ -1995,12 +2093,16 @@ def _resolve_table_url(url: str, profile: str, user_open_id: str = "") -> Feishu
         die(f"无法从 URL 解析 base_token/table_id，+url-resolve 返回：{json.dumps(inner, ensure_ascii=False)[:300]}")
     app_token = _validate_resource_id(app_token, "+url-resolve 返回的 base_token/app_token")
     table_id = _validate_resource_id(table_id, "+url-resolve 返回的 table_id/block_id")
-    return FeishuBackend(app_token, table_id, profile, user_open_id)
+    # Resolving a direct Base URL can be purely local; a wiki URL may refresh.
+    # Compare identity in either case and let the field query refresh if needed.
+    observed = _capture_profile_identity(profile)
+    _assert_profile_identity(identity, observed)
+    return FeishuBackend(app_token, table_id, profile, observed["open_id"], identity=observed)
 
 
 def _missing_table_fields(backend: FeishuBackend) -> list:
     """Validate every existing field before the caller decides whether to repair."""
-    listed = backend._run("+field-list", ["--limit", "200"])
+    listed = backend._run("+field-list", [])
     # +field-list 返回 data.fields = [{name, type, ...}]（实测 lark-cli 1.0.82）
     if "data" not in listed:
         die("+field-list 返回中缺少 data，无法校验令牌表字段")
@@ -2040,7 +2142,7 @@ def _missing_table_fields(backend: FeishuBackend) -> list:
 def cmd_init_adopt(args) -> None:
     profile = args.lark_profile
     identity = _confirmed_profile_identity(profile, args.confirm_identity)
-    backend = _resolve_table_url(args.url, profile, identity["open_id"])
+    backend = _resolve_table_url(args.url, profile, identity)
     _task_target(app_token=backend.app_token, table_id=backend.table_id)
     for spec in _missing_table_fields(backend):
         name, want = spec["name"], spec["type"]
@@ -2054,7 +2156,7 @@ def cmd_init_adopt(args) -> None:
 def _connect_existing_table(args) -> None:
     profile = args.lark_profile
     identity = _confirmed_profile_identity(profile, args.confirm_identity)
-    backend = _resolve_table_url(args.url, profile, identity["open_id"])
+    backend = _resolve_table_url(args.url, profile, identity)
     _task_target(app_token=backend.app_token, table_id=backend.table_id)
     result = _inspect_connection(backend)
     result.update(status="connected_read_only", profile=profile,

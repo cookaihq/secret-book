@@ -64,9 +64,10 @@ def test_successful_write_cannot_be_repeated_but_next_step_is_allowed(task):
     session.before_write("remote", "+base-create")
     session.set_target({"app_token": "app_created", "table_id": "tbl_created"})
     session.succeeded()
-    replay = journal.begin(task_id, context, "create", {})
+    completed = journal.status(context, task_id)
     with pytest.raises(TaskStateError, match="已经完成"):
-        replay.before_write("remote", "+base-create")
+        journal.begin(task_id, context, "create", {})
+    assert journal.status(context, task_id) == completed
     next_step = journal.begin(task_id, context, "save-connection", {})
     next_step.before_write("local", "config-file")
     next_step.succeeded()

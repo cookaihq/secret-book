@@ -49,6 +49,38 @@ Windows 用户级变量可能被不同应用共同继承，存在 `HERMES_HOME` 
 确认具体来源、应用、目标及 `user-default` 身份预设后处理绑定。修复后重新检查 profile、应用和用户身份，
 此前的上下文检查不能代替身份确认。这一分类针对 CLI 明确报告的未绑定错误；已有绑定的身份漂移仍由身份固定值校验处理。
 
+## 可刷新登录态与错误分类
+
+本地状态按 lark-cli 1.0.97 的公开语义判定：user `available=true` 且
+`status/tokenStatus=ready/valid` 为正常，`needs_refresh/needs_refresh` 为可自动刷新。
+profile-list 与 auth-status 顺序读取，较旧的 token 状态可与后者不同；完整 appId/openId
+仍须匹配原连接。状态或返回形状未知时拒绝继续，不推断为未登录。
+
+已有表的查询、取用和写入先以同一 profile、`--as user` 读取该表字段元数据触发刷新，
+随后核对身份；不读取 secret 列探测登录。`+field-list` 不携带不受支持的 `--limit`。
+`init-connect/init-adopt` 在身份确认后解析原链接、检查字段并复核身份；
+`config save/rebind/migrate` 仅保存经确认的本地绑定，不为了保存配置发网络探测。
+`init-create` 没有现成表可探测，已授权的创建请求使用 CLI 自动刷新；创建结果先进入任务记录，
+再复核身份。复核失败保留 `verification_required`，不得重复创建。
+
+| error_kind | 处理 |
+| --- | --- |
+| `feishu_profile_not_authenticated` | 本地明确缺失/过期，或 CLI 明确报告令牌失效、撤销；引导本人登录 |
+| `feishu_identity_mismatch` | 实际 appId/openId 改变；拒绝继续，核对原身份和既有改绑确认 |
+| `feishu_profile_status_unknown` | 未知状态、形状或不能分类的错误；检查 CLI/本机配置，不自动登录 |
+| `feishu_profile_refresh_failed` | 刷新服务失败或调用后仍需刷新；保留原任务并排查 |
+| `feishu_permission_denied` | 核对原表权限、scope 或访问策略，不切换账号 |
+| `feishu_rate_limited` | 只读重试已达上限，稍后续接原任务 |
+| `feishu_network_error` | 检查网络或服务；不当作凭证失效 |
+
+这些引导使用 `secret-book.profile-guidance/v2`、退出码 `3`。只读瞬时错误最多 3 次，
+单次超时 60 秒、退避 1/2 秒；未知和确定性错误不重试。写入超时或网络故障返回 `121`
+且不盲重试。上游错误消息可能含敏感数据，回复仅使用分类后的信息。
+
+同一 workflow 在身份/访问中断后保留原操作和确认。用 `workflow status` 取回任务 token，
+用 `configure-status` 核对业务保存摘要，再以原参数续接；来源、身份、记录、映射或文件变化
+仍会使确认失效。已写入或结果未知的请求继续由原写入记录阻止重放。
+
 ## 常用命令
 
 | 操作 | 命令 |

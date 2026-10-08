@@ -1,9 +1,9 @@
 ---
 name: secret-book
 metadata:
-  version: "2.5.4"
+  version: "2.5.5"
 description: >-
-  v2.5.4｜令牌：把 token、API key、账号密码、OSS/数据库等配置组保存到用户自己的
+  v2.5.5｜令牌：把 token、API key、账号密码、OSS/数据库等配置组保存到用户自己的
   飞书令牌表里，agent 按意图或精确 ID 查询取用，取用输出一律掩码；本机可保存多套
   有名称的令牌配置，并持久切换唯一的当前配置（默认配置）。当用户说
   "存一下这个 token/API key/密钥/凭证"、"用我存的 xx 推送/登录/调用"、"我的
@@ -265,8 +265,18 @@ SECRET_BOOK_CONFIGS_JSON='{"schema_version":1,"active_id":"cfg_xxxxxxxxxx","conf
 目标 profile；禁止调用 `lark-cli profile use`，也不能用全局 active profile 代替配置中的
 profile。
 
+可自动刷新的 user 身份仍属于可用登录：`auth status` 的 `available=true`，且
+`status/tokenStatus` 为 `ready/valid` 或 `needs_refresh/needs_refresh`。以较新的
+auth 快照为准，不被 profile-list 中较旧的 `valid`、`needs_refresh` 或 `expired` 单独否决。
+已有表由脚本读取该表字段元数据触发公开自动刷新，复核原 appId/openId 后继续；
+首次连接仍先确认身份。正常业务读回结果前也复核身份，防止 CLI 在请求中自行刷新后漂移。
+完整分类及恢复见 [可刷新登录态](references/cli.md#可刷新登录态与错误分类)。
+
 - `error_kind` 为 `feishu_cli_context_unbound`，或 CLI 直接报告某 Agent 上下文未绑定时，
   先按 [Lark CLI 上下文检查](references/cli.md#lark-cli-上下文检查)处理；不要当成账号未登录继续发起授权。
+- `feishu_profile_status_unknown`、`feishu_profile_refresh_failed`、`feishu_network_error`、
+  `feishu_rate_limited`、`feishu_permission_denied` 分别按脚本原因排查并保留原任务；
+  这些状态不提供登录动作，不因此改绑身份或重发业务写入。
 - 全局命名配置需要改绑身份时，使用 `config rebind`，再次经过两阶段确认。
 - 项目配置仅缺两个身份固定值时，先向用户展示 `observed_identity`；确认后只把
   `SECRET_BOOK_FEISHU_APP_ID`、`SECRET_BOOK_FEISHU_USER_OPEN_ID` 写回
@@ -284,7 +294,7 @@ profile。
 
 1. 在本次业务的实际环境中运行 `lark-cli profile list`，对候选执行
    `lark-cli auth status --json --profile <name>`（本地检查，单次超时 30 秒，不加 `--verify`）。
-   只把 user 身份有效的条目列为已登录账号；检查失败报告具体原因，不当成空列表。
+   将上述正常及可刷新 user 状态列为已登录账号；未知状态保持拒绝，检查失败报告具体原因，不当成空列表。
    候选为空时也需检查上下文：已有或选定目标 profile 时仍执行上述 status；尚未选定时，
    可仅用 `lark-cli auth status --json` 做本地上下文诊断，其结果不能用作业务身份。
    出现上下文未绑定错误时先走上述上下文检查，处理完成前不创建 profile、绑定应用或发起登录。

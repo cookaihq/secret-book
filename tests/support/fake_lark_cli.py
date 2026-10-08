@@ -51,9 +51,24 @@ def main():
         return 97
 
     state = _state()
+    # v1.0.97 +field-list has no pagination flag; the public shortcut returns
+    # field metadata as a whole. Do not let the fake accept an invalid probe.
+    if argv[:2] == ["base", "+field-list"] and "--limit" in argv:
+        print("unknown flag: --limit", file=sys.stderr)
+        return 2
+    if argv[:1] == ["base"]:
+        changes = state.get("after_shortcuts", {}).pop(argv[1], None)
+        if changes is not None:
+            state.update(changes)
+            Path(os.environ["FAKE_LARK_STATE"]).write_text(json.dumps(state), encoding="utf-8")
     if argv[:1] == ["base"] and argv[1] in state.get("shortcut_errors", {}):
-        print(json.dumps({"ok": False, "error": state["shortcut_errors"][argv[1]]}), file=sys.stderr)
-        return 1
+        error = state["shortcut_errors"][argv[1]]
+        if isinstance(error, list):
+            error = error.pop(0) if error else None
+            Path(os.environ["FAKE_LARK_STATE"]).write_text(json.dumps(state), encoding="utf-8")
+        if error is not None:
+            print(json.dumps({"ok": False, "error": error}), file=sys.stderr)
+            return 1
     if argv[:2] == ["profile", "list"]:
         profile_exit = state.get("profile_exit")
         if profile_exit:
@@ -98,6 +113,9 @@ def main():
         })))
         return 0
     if len(argv) >= 2 and argv[:2] == ["base", "+field-list"]:
+        if "after_field_list" in state:
+            state.update(state.pop("after_field_list"))
+            Path(os.environ["FAKE_LARK_STATE"]).write_text(json.dumps(state), encoding="utf-8")
         print(json.dumps(state.get("field_list_response", {
             "data": {"fields": state.get("fields", DEFAULT_FIELDS)}
         })))

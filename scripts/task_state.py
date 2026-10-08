@@ -141,6 +141,8 @@ class Journal:
                 raise TaskStateError("task_closed", "任务已经关闭；新任务重新确定角色")
             if entry["write_attempted"]:
                 raise TaskStateError("verification_required", "上次写入可能已执行；先核对实际状态，禁止重放。可用独立只读命令核对")
+            if operation["fingerprint"] in entry["completed_operations"]:
+                raise TaskStateError("operation_completed", "本任务已经完成过该写入；读取已保存结果，不重复执行")
             previous_pending = copy.deepcopy(entry["pending"])
             lease = secrets.token_hex(8)
             entry.update(operation=operation, lease=lease, stage="running", pending=None,
@@ -190,6 +192,16 @@ class Session:
         source_token = guidance.get("source_confirmation_token")
         if isinstance(source_token, str):
             pending["source_confirmation_token"] = source_token
+        # A profile/access interruption occurs before the original operation.
+        # Keep its confirmation across processes; the operation still validates
+        # identity, records, mappings and file revisions before accepting it.
+        previous = self.previous_pending
+        if (guidance.get("schema_version") == "secret-book.profile-guidance/v2"
+                and not isinstance(token, str) and previous
+                and previous["operation"] == self.operation):
+            for key in ("confirmation_token", "source_confirmation_token"):
+                if isinstance(previous.get(key), str):
+                    pending[key] = previous[key]
         identity = guidance.get("observed_identity")
         if isinstance(identity, dict):
             pending["observed_identity"] = {key: value for key, value in identity.items()

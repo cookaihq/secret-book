@@ -202,23 +202,51 @@ def test_admin_creation_result_is_recovered_and_repeat_creation_is_blocked(cli):
     assert created.returncode == 0, created.stderr
     recovered = status(cli, task_id)
     assert recovered["target"]["table_id"] == "tbl_test_created"
-    # Even after another identity preview, the completed write must not execute again.
+    # Completed writes are refused before another identity preview changes the task.
     retry_pending = cli(*command)
-    retry_token = json.loads(retry_pending.stdout)["confirmation_token"]
-    repeated = cli(*command, "--confirm-identity", retry_token)
+    assert retry_pending.returncode == 3
+    assert json.loads(retry_pending.stdout)["status"] == "operation_completed"
+    repeated = cli(*command, "--confirm-identity", token)
     assert repeated.returncode == 3
     assert json.loads(repeated.stdout)["status"] == "operation_completed"
+    assert status(cli, task_id) == recovered
     assert sum(call[1] == "+base-create" for call in calls(cli)) == 1
 
 
-def test_ambiguous_remote_write_survives_process_exit_and_blocks_replay(cli):
+def test_creation_refresh_identity_change_preserves_result_and_never_replays(cli):
+    task_id = start(cli, "administrator")
+    command = ("init-create", "--lark-profile", "work-profile", *flags(task_id))
+    token = json.loads(cli(*command).stdout)["confirmation_token"]
+    state = json.loads(cli.state_path.read_text(encoding="utf-8"))
+    after = json.loads(json.dumps({"profiles": state["profiles"], "auth": state["auth"]}))
+    after["auth"]["work-profile"]["identities"]["user"]["openId"] = "ou_changed"
+    state["profiles"][0]["tokenStatus"] = "needs_refresh"
+    state["auth"]["work-profile"]["identities"]["user"].update(status="needs_refresh", tokenStatus="needs_refresh")
+    state["after_shortcuts"] = {"+base-create": after}
+    cli.state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    result = cli(*command, "--confirm-identity", token)
+
+    assert result.returncode == 3, result.stderr
+    assert json.loads(result.stdout)["error_kind"] == "feishu_identity_mismatch"
+    recovered = status(cli, task_id)
+    assert recovered["stage"] == "verification_required"
+    assert recovered["target"]["app_token"] == "app_test_created"
+    repeated = cli(*command, "--confirm-identity", token)
+    assert json.loads(repeated.stdout)["status"] == "verification_required"
+    assert sum(call[1] == "+base-create" for call in calls(cli)) == 1
+
+
+@pytest.mark.parametrize("failure", ["network", "timeout"])
+def test_ambiguous_remote_write_survives_process_exit_and_blocks_replay(cli, failure):
     task_id = start(cli, "administrator")
     command = ("init-create", "--lark-profile", "work-profile", *flags(task_id))
     token = json.loads(cli(*command).stdout)["confirmation_token"]
     state = json.loads(cli.state_path.read_text(encoding="utf-8"))
     state["shortcut_errors"] = {"+base-create": {"type": "network", "message": "connection reset"}}
     cli.state_path.write_text(json.dumps(state), encoding="utf-8")
-    failed = cli(*command, "--confirm-identity", token)
+    failed = cli(*command, "--confirm-identity", token,
+                 extra_env={"FAKE_LARK_TIMEOUT_SHORTCUT": "+base-create"} if failure == "timeout" else {})
     assert failed.returncode == 121
     assert status(cli, task_id)["stage"] == "verification_required"
     retried = cli(*command, "--confirm-identity", token)
@@ -261,6 +289,59 @@ def test_consumer_file_confirmation_resumes_in_same_task_and_stores_no_values(cl
     saved_state = (cli.home / ".config/secret-book/workflows.json").read_text(encoding="utf-8")
     assert "synthetic-secret-one" not in saved_state
     assert status(cli, task_id)["stage"] == "step_complete"
+
+
+def test_refresh_interruption_preserves_configure_confirmation_and_writes_once(cli, consumer):
+    task_id = start(cli)
+    report = inspect(cli)
+    command = (*consumer_args(consumer, report), *flags(task_id))
+    preview = cli(*command)
+    assert preview.returncode == 3, preview.stderr
+    original = json.loads(preview.stdout)
+    token = status(cli, task_id)["pending"]["confirmation_token"]
+    before = status(cli, task_id)
+    consumer_pending = json.loads(cli("configure-status", "--requirements", str(consumer)).stdout)["pending"]
+    state = json.loads(cli.state_path.read_text(encoding="utf-8"))
+    state["after_field_list"] = json.loads(json.dumps({"profiles": state["profiles"], "auth": state["auth"]}))
+    state["profiles"][0]["tokenStatus"] = "needs_refresh"
+    state["auth"]["work-profile"]["identities"]["user"].update(
+        status="needs_refresh", tokenStatus="needs_refresh")
+    state["shortcut_errors"] = {"+field-list": {"type": "authorization", "subtype": "permission_denied"}}
+    cli.state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    interrupted = cli(*command, "--confirm", token)
+
+    assert interrupted.returncode == 3
+    assert json.loads(interrupted.stdout)["error_kind"] == "feishu_permission_denied"
+    recovered = status(cli, task_id)
+    assert recovered["target"] == before["target"]
+    assert recovered["pending"]["confirmation_token"] == token
+    assert recovered["pending"]["operation"] == before["pending"]["operation"]
+    pending = json.loads(cli("configure-status", "--requirements", str(consumer)).stdout)["pending"]
+    assert pending == consumer_pending
+    target = cli.home / ".config/example/.env"
+    assert not target.exists()
+
+    del state["shortcut_errors"]
+    cli.state_path.write_text(json.dumps(state), encoding="utf-8")
+    written = cli(*command, "--confirm", recovered["pending"]["confirmation_token"])
+    assert written.returncode == 0, written.stdout + written.stderr
+    assert json.loads(written.stdout)["status"] == "written"
+    revision = (target.read_bytes(), target.stat().st_mtime_ns)
+    completed = status(cli, task_id)
+    completed_calls = calls(cli)
+    repeated = cli(*command, "--confirm", token)
+    assert repeated.returncode == 3
+    assert json.loads(repeated.stdout)["status"] == "operation_completed"
+    assert status(cli, task_id) == completed
+    assert calls(cli) == completed_calls
+    assert (target.read_bytes(), target.stat().st_mtime_ns) == revision
+    finished = cli("workflow", "finish", "--id", task_id, "--agent", "codex")
+    assert finished.returncode == 0, finished.stdout + finished.stderr
+    assert status(cli, task_id)["closed"] is True
+    assert status(cli, task_id)["outcome"] == "completed"
+    assert not any(call[1] in ("+base-create", "+field-create", "+record-batch-update") for call in calls(cli))
+    assert "synthetic-secret-one" not in (preview.stdout + interrupted.stdout + written.stdout)
 
 
 def test_empty_global_config_does_not_hide_complete_project_connection(cli):
