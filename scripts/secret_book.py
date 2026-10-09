@@ -792,7 +792,7 @@ def require_backend(args) -> "FeishuBackend":
 _PAYLOAD_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
-def parse_payload(text: str) -> dict:
+def parse_payload(text: str, *, allow_empty: bool = False) -> dict:
     """design.md §3.2：值 = 首个 = 之后的原文，不去引号、不转义、单行。
     与配置 .env 解析是两套规则，不得合并。"""
     pairs: dict = {}
@@ -805,13 +805,25 @@ def parse_payload(text: str) -> dict:
         key = key.strip()
         if not _PAYLOAD_KEY.match(key):
             die(f"payload 第 {lineno} 行键名不合法（需匹配 [A-Za-z_][A-Za-z0-9_]*）")
-        if not val:
-            die(f"payload 第 {lineno} 行值为空")
         pairs[key] = val
-        _SENSITIVE.append(val)
+        if val:
+            _SENSITIVE.append(val)
     if not pairs:
         die("payload 为空：stdin 至少要有一行 KEY=VALUE")
+    if not allow_empty:
+        _require_payload_values(pairs)
     return pairs
+
+
+def _require_payload_values(pairs: dict) -> None:
+    missing = [key for key, value in pairs.items() if not value.strip()]
+    if missing:
+        raise ProfileGuidance({
+            "schema": "secret-book.record-guidance/v1",
+            "status": "record_values_missing",
+            "missing_keys": missing,
+            "message": "记录已存在，以下值待补充；请在原记录填写后再取用，无需重新创建记录。",
+        })
 
 
 # ---------- lark-cli 调用与网络抖动处理（ADR 0006）----------
@@ -849,7 +861,8 @@ LARK_MAX_ATTEMPTS = 3     # ADR 0006 规则 3：总尝试 3 次（首次 + 2 次
 EXIT_AMBIGUOUS = 121
 
 # 读 = 幂等查询，瞬时故障可安全重试。
-LARK_READ_SHORTCUTS = frozenset({"+record-list", "+field-list"})
+# lark-cli 1.0.97 classifies share-link lookup as read; it changes no permissions.
+LARK_READ_SHORTCUTS = frozenset({"+record-list", "+field-list", "+record-share-link-create"})
 # 写 = 会改令牌表结构或内容。飞书 Base 这几个接口没有幂等键，本 skill 也没有
 # 「先查后写」的对账通道，所以超时/连接中断后结果不明，一律不盲重试（规则 4）。
 LARK_WRITE_SHORTCUTS = frozenset({"+record-batch-create", "+record-batch-update",
@@ -1302,9 +1315,24 @@ class FeishuBackend:
         cond = json.dumps({"logic": "and", "conditions": [[by, "==", value]]}, ensure_ascii=False)
         return self.list_records(filter_json=cond, with_secret=with_secret, visible_only=visible_only)
 
-    def create_record(self, fields: dict) -> None:
+    def create_record(self, fields: dict) -> str:
         body = json.dumps({"create_records": [fields]}, ensure_ascii=False)
-        self._run("+record-batch-create", ["--json", body])
+        payload = self._run("+record-batch-create", ["--json", body])
+        data = payload.get("data")
+        ids = data.get("record_id_list") if isinstance(data, dict) else None
+        if (not isinstance(ids, list) or len(ids) != 1 or not isinstance(ids[0], str)
+                or not re.fullmatch(r"rec[A-Za-z0-9_]+", ids[0])):
+            die("新增请求已返回，但未取得唯一记录定位；先按名称核对原表，不要重复创建。", EXIT_AMBIGUOUS)
+        return ids[0]
+
+    def record_url(self, record_id: str) -> str | None:
+        payload = self._run("+record-share-link-create", ["--record-id", record_id])
+        data = payload.get("data")
+        links = data.get("record_share_links") if isinstance(data, dict) else None
+        url = links.get(record_id) if isinstance(links, dict) else None
+        if isinstance(url, str) and url.startswith("https://") and not any(ch.isspace() for ch in url):
+            return url
+        return None
 
     def update_record(self, record_id: str, fields: dict) -> None:
         body = json.dumps({"update_records": {record_id: fields}}, ensure_ascii=False)
@@ -1414,7 +1442,7 @@ def resolve_records(backend: FeishuBackend, args, need_secret: bool) -> list:
         out += matches
     for rec in out:
         if rec.get("secret"):
-            for v in parse_payload(rec["secret"]).values():
+            for v in parse_payload(rec["secret"], allow_empty=True).values():
                 pass  # parse_payload 已把值登记进 _SENSITIVE
     return out
 
@@ -1809,7 +1837,10 @@ def cmd_config_migrate(args) -> None:
 
 def cmd_save(args) -> None:
     payload_text = sys.stdin.read()
-    pairs = parse_payload(payload_text)
+    pairs = parse_payload(payload_text, allow_empty=True)
+    visible_to = list(dict.fromkeys(args.visible_to or []))
+    if any(not re.fullmatch(r"ou_[A-Za-z0-9_]+", user_id) for user_id in visible_to):
+        die("--visible-to 需要已核实的飞书人员 open_id；先确认人员，不使用显示名或猜测的 ID")
     backend = require_backend(args)
     # 查重跨全表（含对当前用户隐藏的记录）：name 是全局查找键，可见范围不豁免唯一性
     if backend.find("name", args.name, with_secret=False, visible_only=False):
@@ -1819,7 +1850,7 @@ def cmd_save(args) -> None:
         "name": args.name,
         "service": args.service,
         "purpose": args.purpose,
-        "secret": payload_text.strip(),
+        "secret": payload_text.rstrip("\r\n"),
     }
     if args.account:
         fields["account"] = args.account
@@ -1828,8 +1859,26 @@ def cmd_save(args) -> None:
         fields["expires_at"] = f"{exp} 00:00:00" if re.fullmatch(r"\d{4}-\d{2}-\d{2}", exp) else exp
     if args.notes:
         fields["notes"] = args.notes
-    backend.create_record(fields)
-    info(f"已保存 {args.name} (id={fields['id']}，{len(pairs)} 个键：{', '.join(pairs)})")
+    if visible_to:
+        fields["visible_to"] = [{"id": user_id} for user_id in visible_to]
+    record_id = backend.create_record(fields)
+    # Creation is already complete. A link lookup failure must never invite a replay.
+    try:
+        record_url = backend.record_url(record_id)
+    except (SystemExit, ProfileGuidance):
+        record_url = None
+    missing = [key for key, value in pairs.items() if not value.strip()]
+    print(json.dumps({
+        "status": "record_created", "id": fields["id"], "name": _scrub(args.name),
+        "app_token": backend.app_token, "table_id": backend.table_id,
+        "record_id": record_id, "record_url": record_url,
+        "link_status": "available" if record_url else "unavailable",
+        "keys": list(pairs), "missing_keys": missing,
+    }, ensure_ascii=False))
+    if missing:
+        warn(f"记录已创建，以下值待补充：{', '.join(missing)}。请在这条记录中补值，无需重新创建。")
+    if not record_url:
+        warn(f"记录已创建，但暂未取得记录链接；请沿用已确认的表链接，按名称 {args.name} 定位，不要重复创建。")
 
 
 def cmd_list(args) -> None:
@@ -1854,7 +1903,9 @@ def cmd_get(args) -> None:
     rec = resolve_records(backend, args, need_secret=True)[0]
     for key in META_FIELDS + ["visible_to", "notes"]:
         print(f"{key}: {rec.get(key, '')}")
-    print(f"keys: {', '.join(parse_payload(rec['secret']))}")
+    pairs = parse_payload(rec["secret"], allow_empty=True)
+    print(f"keys: {', '.join(pairs)}")
+    print(f"missing_keys: {', '.join(key for key, value in pairs.items() if not value.strip())}")
 
 
 def cmd_run(args) -> None:
@@ -1984,7 +2035,7 @@ def cmd_copy(args) -> None:
     _require_single_lookup(args, "copy")
     backend = require_backend(args)
     rec = resolve_records(backend, args, need_secret=True)[0]
-    pairs = parse_payload(rec["secret"])
+    pairs = parse_payload(rec["secret"], allow_empty=True)
     if args.key:
         if args.key not in pairs:
             die(f"记录 {rec['name']} 没有键 {args.key}（可用：{', '.join(pairs)}）")
@@ -1993,6 +2044,7 @@ def cmd_copy(args) -> None:
         value = next(iter(pairs.values()))
     else:
         die(f"记录 {rec['name']} 有多个键（{', '.join(pairs)}），必须用 --key 指定")
+    _require_payload_values({args.key or next(iter(pairs)): value})
     tools = (["clip.exe"],) if os.name == "nt" else (["pbcopy"], ["wl-copy"], ["xclip", "-selection", "clipboard"])
     for tool in tools:
         try:
@@ -2283,6 +2335,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--account")
     sp.add_argument("--expires-at", dest="expires_at", help="YYYY-MM-DD")
     sp.add_argument("--notes")
+    sp.add_argument("--visible-to", action="append", metavar="OPEN_ID",
+                    help="允许取用的已核实飞书人员 open_id，可重复；与记录一次写入，省略表示不额外限制")
     common(sp)
     sp.set_defaults(func=cmd_save)
 

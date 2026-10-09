@@ -128,7 +128,7 @@ uv run --project "$SkillDir" "$SkillDir/scripts/secret_book.py" repair-ids --nam
 `save` 从标准输入读取 dotenv，不从命令参数读取凭证值：
 
 ```bash
-printf '%s\n' 'GITHUB_TOKEN=<token>' | \
+printf '%s\n' 'GITHUB_TOKEN=' | \
   uv run --project "$SKILL_DIR" "$SKILL_DIR/scripts/secret_book.py" save \
   --name "<名称>" --service github --purpose "<用途>" --use-global-config \
   --workflow "<维护任务id>" --workflow-agent "<实际宿主>"
@@ -140,6 +140,18 @@ PowerShell 管道需使用 UTF-8，`$Payload` 仅代表已获授权的内存输�
 $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 $Payload | uv run --project "$SkillDir" "$SkillDir/scripts/secret_book.py" save --name "<名称>" --service github --purpose "<用途>" --use-global-config --workflow "<维护任务id>" --workflow-agent "<实际宿主>"
 ```
+
+原生 Windows 使用上面的 PowerShell 入口。仅创建待补值记录时，可先设 `$Payload = "GITHUB_TOKEN="`（替换为已确认的实际键名；多个键用 PowerShell 换行连接），再传入该管道；此输入不包含密钥值。
+
+先按[维护者流程](roles.md#凭证提供者维护者)让用户确认使用对象分析结果或其提供的确切配置，再执行 `save`。`name`、`service`、`purpose` 和 `secret` 的键名须已明确；至少提供一行 `KEY=`。每行首个 `=` 后是值的原文，不去引号、不转义。未提供的 Value 留空，已提供的 Value 保留，允许全部或部分键缺值；不能把示例值或“待填写”写成实际 Value。
+
+需要限制可见人员时，在同一次 `save` 中重复传入 `--visible-to <open_id>`。这些 ID 必须来自已核对的实际人员和已确认的名单，不能猜测。未指定该参数表示不额外限制通过 Secret Book 取用；名单有待确认时不先创建无限制记录。人员字段不会自动授予飞书表权限；已有记录的名单调整仍在飞书界面完成。
+
+创建成功返回 `status=record_created`、记录编号 `id`、名称 `name`、键名 `keys`、待填键名 `missing_keys` 和飞书记录标识 `record_id`，不返回值。空值创建是成功状态，Agent 给出已有记录的定位入口和待补 Value 清单，让用户只补该记录的值。创建时自动生成编号，后续不需要 `repair-ids`；网络写入结果不明时仍先核对，不能再次创建同名记录。
+
+`record_url` 来自官方 CLI 的只读记录链接接口，`link_status=available` 时可直接交给用户；获取失败时为 `unavailable`，记录创建仍然成功。此时沿用此前确认的表链接和输出的记录名称／编号定位，不猜测链接、不重复创建。获取链接不会修改飞书分享权限。缺少所需 Value 时，`run`／`copy` 返回 `record_values_missing`，业务配置流程返回 `missing_keys`，均附待补键名。
+
+`list` 只读取元数据，可列出待补记录，不判断密钥是否完整。`get` 允许空 Value，输出 `keys` 和 `missing_keys`，不返回值。`run` 注入所选记录的全部键，须先补齐这些值；`copy --key` 只要求所选键有值，`configure` 按实际映射和业务要求校验需要的键。所需值为空时提示在原记录补齐，再继续取用；不传递空值，也不要求重新创建记录。
 
 `config list/use` 直接管理全局配置，不接受 `--use-global-config`。`save`、`list`、
 `get`、`configure`、`run --id/--name/--auto` 和 `copy` 要使用全局当前配置时，必须显式添加这个参数。`run --requirements` 已移除，不再包装业务程序启动。保存配置的完整确认流程见 [接入流程](consumer-setup.md)。

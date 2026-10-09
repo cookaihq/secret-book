@@ -1,9 +1,9 @@
 ---
 name: secret-book
 metadata:
-  version: "2.5.6"
+  version: "2.6.0"
 description: >-
-  v2.5.6｜令牌：把 token、API key、账号密码、OSS/数据库等配置组保存到用户自己的
+  v2.6.0｜令牌：把 token、API key、账号密码、OSS/数据库等配置组保存到用户自己的
   飞书令牌表里，agent 按意图或精确 ID 查询取用，取用输出一律掩码；本机可保存多套
   有名称的令牌配置，并持久切换唯一的当前配置（默认配置）。当用户说
   "存一下这个 token/API key/密钥/凭证"、"用我存的 xx 推送/登录/调用"、"我的
@@ -473,11 +473,13 @@ resource namespace 的自动绑定。禁止把裸 ID 自动归到当前配置。
 
 ## 令牌记录动作
 
+新增记录先按[凭证提供者／维护者流程](references/roles.md#凭证提供者维护者)明确使用对象或确切配置要求，分析并展示 `name`、`service`、`purpose`、`secret` 方案，由用户确认后创建。Agent 负责记录与编号；未提供的 Value 留空，用户只在创建好的记录中补值。
+
 | 动作 | 命令 | 可观察结果 |
 |---|---|---|
-| 保存 | `printf '%s\n' 'GITHUB_TOKEN=...' \| … save --name github-main --service github --purpose '主账号推送' --use-global-config` | stdin 接收 dotenv；输出记录名、`sec_` ID、键数量和键名 |
+| 保存 | `… save --name github-main --service github --purpose '主账号推送' --use-global-config` | 按[当前宿主的输入方式](references/cli.md#凭证输入与配置选择)从 stdin 传入 dotenv；允许待补 Value，自动编号并输出记录定位、键名和待补值状态 |
 | 列表 | `… list --use-global-config` | 只读取并输出 id/name/service/account/purpose/expires_at，不读取 secret/notes |
-| 查看一条 | `… get --name github-main --use-global-config` | 输出元数据、visible_to、notes 和键名，不输出值；一次只能指定一个 name 或 id |
+| 查看一条 | `… get --name github-main --use-global-config` | 输出元数据、visible_to、notes、键名和待补值状态，不输出值；一次只能指定一个 name 或 id |
 | 执行 | `… run --id sec_xxx --use-global-config -- <命令>` | 把全部键值注入子进程环境，输出键名与命令，透传子进程退出码 |
 | 执行并绑定 | `… run --id sec_xxx --bind --use-global-config -- <命令>` | 仅子进程退出码为 0 时保存自动绑定 |
 | 自动执行 | `… run --auto --use-global-config -- <命令>` | 使用当前令牌表对应的历史绑定；无绑定、旧绑定或失效绑定退出 3 |
@@ -491,6 +493,9 @@ resource namespace 的自动绑定。禁止把裸 ID 自动归到当前配置。
 
 payload 每行格式为 `KEY=value`，值是首个 `=` 后的原文，不去引号、不转义；
 必须单行。SSH 私钥、证书等多行内容先由用户转为单行 base64，用时自行解码。
+创建记录和查看详情允许 `KEY=`，也允许已填值与空值混合；至少提供一个已确认的键名。
+`list` 不读取 secret，列出记录不代表值已齐全。实际取用所需的 Value 尚空时，提示在原记录补齐；
+不向业务配置、子进程或剪贴板传递待补空值。完整输入与返回结果见 [CLI 说明](references/cli.md#凭证输入与配置选择)。
 
 ## 可见范围
 
@@ -499,6 +504,8 @@ payload 每行格式为 `KEY=value`，值是首个 `=` 后的原文，不去引�
 list/get/run/copy 全部路径中不可见，没有绕过 flag。`save` 的名称查重例外地跨
 全表执行，避免隐藏记录导致重名。旧表缺此列时，既有查表接口仍按不限制处理；
 首次连接须通过完整字段检查，缺列交管理员经授权运行 `init-adopt` 补建。
+新增受限记录用可重复的 `save --visible-to <open_id>`，把已确认名单与记录一并写入；
+人员身份尚未核实时先核对，不先建无限制记录。名单不授予飞书表权限，也不能阻止有表权限者直接查看明文。
 `list/get/run/copy/configure` 不补写记录 ID；缺 ID 的目标记录由维护者显式处理。
 
 ## 自动绑定
@@ -521,7 +528,8 @@ SHA-256；`bindings.json` 只保存哈希和其它元数据，不保存这四个
 先让调用者报告字段、实际来源和证据，区分配置问题与网络、余额、权限、限流等错误。
 提供“修改本机配置 / 从 secret-book 选择配置修复”，已有明确选择则沿用。选择手填时
 不查表。选择 secret-book 时按 [业务配置流程](references/consumer-setup.md) 准备版本、
-飞书身份和令牌表；新用户可以中途改为手填，无记录或缺项时让其在自己的表或文件中填写。
+飞书身份和令牌表；新用户可以中途改为手填文件。无记录且用户要求新增时，转入维护者流程由 Agent 创建；
+已有记录缺 Value 时，让维护者在该记录补值，保持原取用目标。
 
 展示真实记录/账号、表中 key、映射、准确写入文件和替换项，唯一候选首次也确认。
 修复原来源；新增才决定保存位置。业务配置可持久保存时，不把每次 `run` 取值当作默认。

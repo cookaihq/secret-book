@@ -139,6 +139,25 @@ def main():
             "has_more": False,
         }}))
         return 0
+    if argv[:2] == ["base", "+record-batch-create"]:
+        fields = json.loads(_arg(argv, "--json"))["create_records"]
+        records = state.setdefault("records", {}).setdefault(_arg(argv, "--base-token"), [])
+        created = []
+        for index, record in enumerate(fields):
+            record_id = "rec_created" if not records and index == 0 else f"rec_created_{len(records) + 1}"
+            records.append({**record, "_record_id": record_id})
+            created.append(record_id)
+        Path(os.environ["FAKE_LARK_STATE"]).write_text(json.dumps(state), encoding="utf-8")
+        print(json.dumps({"data": {"record_id_list": created}}))
+        return 0
+    if argv[:2] == ["base", "+record-share-link-create"]:
+        record_id = _arg(argv, "--record-id")
+        url = (f"https://example.feishu.cn/base/{_arg(argv, '--base-token')}"
+               f"?table={_arg(argv, '--table-id')}&record={record_id}")
+        print(json.dumps(state.get("record_share_link_response", {
+            "data": {"record_share_links": {record_id: url}}
+        })))
+        return 0
     if argv[:2] == ["base", "+record-batch-update"]:
         updates = json.loads(_arg(argv, "--json"))["update_records"]
         for record in state.get("records", {}).get(_arg(argv, "--base-token"), []):
