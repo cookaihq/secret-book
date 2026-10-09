@@ -1,9 +1,9 @@
 ---
 name: secret-book
 metadata:
-  version: "2.6.1"
+  version: "2.6.2"
 description: >-
-  v2.6.1｜令牌：把 token、API key、账号密码、OSS/数据库等配置组保存到用户自己的
+  v2.6.2｜令牌：把 token、API key、账号密码、OSS/数据库等配置组保存到用户自己的
   飞书令牌表里，agent 按意图或精确 ID 查询取用，取用输出一律掩码；本机可保存多套
   有名称的令牌配置，并持久切换唯一的当前配置（默认配置）。当用户说
   "存一下这个 token/API key/密钥/凭证"、"用我存的 xx 推送/登录/调用"、"我的
@@ -480,6 +480,8 @@ resource namespace 的自动绑定。禁止把裸 ID 自动归到当前配置。
 
 新增记录先按[凭证提供者／维护者流程](references/roles.md#凭证提供者维护者)明确使用对象或确切配置要求，分析并展示 `name`、`service`、`purpose`、`secret` 方案，由用户确认后创建。Agent 负责记录与编号；未提供的 Value 留空，用户只在创建好的记录中补值。
 
+**每次提示用户补填或修改 Value，都按[补值链接交付](references/roles.md#补值链接交付)在当前回复正文重贴完整、可点击的多维表格链接**，再说明记录名称、键名和填写位置。
+
 | 动作 | 命令 | 可观察结果 |
 |---|---|---|
 | 保存 | `… save --name github-main --service github --purpose '主账号推送' --use-global-config` | 按[当前宿主的输入方式](references/cli.md#凭证输入与配置选择)从 stdin 传入 dotenv；允许待补 Value，自动编号并输出记录定位、键名和待补值状态 |
@@ -534,7 +536,7 @@ SHA-256；`bindings.json` 只保存哈希和其它元数据，不保存这四个
 提供“修改本机配置 / 从 secret-book 选择配置修复”，已有明确选择则沿用。选择手填时
 不查表。选择 secret-book 时按 [业务配置流程](references/consumer-setup.md) 准备版本、
 飞书身份和令牌表；新用户可以中途改为手填文件。无记录且用户要求新增时，转入维护者流程由 Agent 创建；
-已有记录缺 Value 时，让维护者在该记录补值，保持原取用目标。
+已有记录缺 Value 时，按[补值链接交付](references/roles.md#补值链接交付)给出完整可点击链接，让维护者在该记录补值，保持原取用目标。
 
 展示真实记录/账号、表中 key、映射、准确写入文件和替换项，唯一候选首次也确认。
 修复原来源；新增才决定保存位置。业务配置可持久保存时，不把每次 `run` 取值当作默认。

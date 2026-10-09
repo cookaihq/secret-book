@@ -147,9 +147,9 @@ $Payload | uv run --project "$SkillDir" "$SkillDir/scripts/secret_book.py" save 
 
 需要限制可见人员时，在同一次 `save` 中重复传入 `--visible-to <open_id>`。这些 ID 必须来自已核对的实际人员和已确认的名单，不能猜测。未指定该参数表示不额外限制通过 Secret Book 取用；名单有待确认时不先创建无限制记录。人员字段不会自动授予飞书表权限；已有记录的名单调整仍在飞书界面完成。
 
-创建成功返回 `status=record_created`、记录编号 `id`、名称 `name`、键名 `keys`、待填键名 `missing_keys` 和飞书记录标识 `record_id`，不返回值。空值创建是成功状态，Agent 给出已有记录的定位入口和待补 Value 清单，让用户只补该记录的值。创建时自动生成编号，后续不需要 `repair-ids`；网络写入结果不明时仍先核对，不能再次创建同名记录。
+创建成功返回 `status=record_created`、记录编号 `id`、名称 `name`、键名 `keys`、待填键名 `missing_keys` 和飞书记录标识 `record_id`，不返回值。空值创建是成功状态，Agent 按[补值链接交付](roles.md#补值链接交付)在当前回复给出完整可点击的表链接和待补 Value 清单，让用户只补该记录的值。创建时自动生成编号，后续不需要 `repair-ids`；网络写入结果不明时仍先核对，不能再次创建同名记录。
 
-`record_url` 来自官方 CLI 的只读记录链接接口，`link_status=available` 时可直接交给用户；获取失败时为 `unavailable`，记录创建仍然成功。此时沿用此前确认的表链接和输出的记录名称／编号定位，不猜测链接、不重复创建。获取链接不会修改飞书分享权限。缺少所需 Value 时，`run`／`copy` 返回 `record_values_missing`，业务配置流程返回 `missing_keys`，均附待补键名。
+`record_url` 来自官方 CLI 的只读记录链接接口，`link_status=available` 时可附上完整可点击的记录直达链接；获取失败时为 `unavailable`，记录创建仍然成功。此时在本条回复正文重新贴出此前确认的完整表链接，再给记录名称定位；不能只转述“沿用此前链接”或只列编号。获取链接不会修改飞书分享权限。缺少所需 Value 时，`run`／`copy` 返回 `record_values_missing`，业务配置流程返回 `missing_keys`，均附待补键名；这些提示也遵守同一链接交付规则。
 
 `list` 只读取元数据，可列出待补记录，不判断密钥是否完整。`get` 允许空 Value，输出 `keys` 和 `missing_keys`，不返回值。`run` 注入所选记录的全部键，须先补齐这些值；`copy --key` 只要求所选键有值，`configure` 按实际映射和业务要求校验需要的键。所需值为空时提示在原记录补齐，再继续取用；不传递空值，也不要求重新创建记录。
 

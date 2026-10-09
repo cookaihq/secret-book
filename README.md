@@ -121,6 +121,8 @@ Claude Code 2.1.293 与 Codex CLI 0.162.0 各完成五个合成场景，覆盖�
 
 预期结果是记录位置、名称和待补值清单。待补记录可以查询，实际取用前需填写所用的值；Agent 会明确说明“记录已创建，以下值待补充”，不会把记录创建成功说成凭证已经可用。填好后可以回复“已补好”，继续原本的取用任务。
 
+每次提示补填或修改密钥值，Agent 都会在本条回复附上完整、可点击的多维表格链接。直接点击进入，找到提示的记录，在 `secret` 中对应键名的等号后填写 Value；不用根据表 ID 自行找表或翻回前面的消息。
+
 需要限定人员时，名单须随记录一并创建；身份尚不明确时先核对，不会先建成无限制记录。`visible_to` 只限制通过 Secret Book 取用，不能阻止拥有相应表格权限的人直接查看明文。
 
 已有记录内容的修改、删除和名单调整在飞书界面完成；缺失编号可由 Agent 在确认后补齐。如果你明确只需要界面维护指导，本机 Secret Book 没有初始化也可以继续。没有表链接或编辑权限时，先由管理员准备；确实要自己建表时再转入管理员任务。密钥在原服务轮换后，表和各使用者本机配置需要分别更新。
@@ -278,7 +280,7 @@ Git 安装在 Windows 使用随包 PowerShell 检查，在 macOS/Linux/WSL 使�
 <!-- release-table:begin -->
 | 目标 | 版本 | Release |
 |---|---|---|
-| secret-book | 2.6.1 | [v2.6.1](https://github.com/cookaihq/secret-book/releases/tag/v2.6.1) |
+| secret-book | 2.6.2 | [v2.6.2](https://github.com/cookaihq/secret-book/releases/tag/v2.6.2) |
 <!-- release-table:end -->
 
 ## License
