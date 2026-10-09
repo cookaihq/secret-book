@@ -9,7 +9,7 @@
 # lark-cli 不由 uv 管理；缺失时由 Agent 按 SKILL.md 自动安装并复检。
 [project]
 name = "secret-book"
-version = "2.5.5"
+version = "2.5.6"
 description = "令牌管理 CLI（飞书多维表格后端）的运行时环境锁定"
 requires-python = ">=3.9"
 dependencies = []
