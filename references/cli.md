@@ -49,6 +49,38 @@ Windows 用户级变量可能被不同应用共同继承，存在 `HERMES_HOME` 
 确认具体来源、应用、目标及 `user-default` 身份预设后处理绑定。修复后重新检查 profile、应用和用户身份，
 此前的上下文检查不能代替身份确认。这一分类针对 CLI 明确报告的未绑定错误；已有绑定的身份漂移仍由身份固定值校验处理。
 
+## 可刷新登录态与错误分类
+
+本地状态按 lark-cli 1.0.97 的公开语义判定：user `available=true` 且
+`status/tokenStatus=ready/valid` 为正常，`needs_refresh/needs_refresh` 为可自动刷新。
+profile-list 与 auth-status 顺序读取，较旧的 token 状态可与后者不同；完整 appId/openId
+仍须匹配原连接。状态或返回形状未知时拒绝继续，不推断为未登录。
+
+已有表的查询、取用和写入先以同一 profile、`--as user` 读取该表字段元数据触发刷新，
+随后核对身份；不读取 secret 列探测登录。`+field-list` 不携带不受支持的 `--limit`。
+`init-connect/init-adopt` 在身份确认后解析原链接、检查字段并复核身份；
+`config save/rebind/migrate` 仅保存经确认的本地绑定，不为了保存配置发网络探测。
+`init-create` 没有现成表可探测，已授权的创建请求使用 CLI 自动刷新；创建结果先进入任务记录，
+再复核身份。复核失败保留 `verification_required`，不得重复创建。
+
+| error_kind | 处理 |
+| --- | --- |
+| `feishu_profile_not_authenticated` | 本地明确缺失/过期，或 CLI 明确报告令牌失效、撤销；引导本人登录 |
+| `feishu_identity_mismatch` | 实际 appId/openId 改变；拒绝继续，核对原身份和既有改绑确认 |
+| `feishu_profile_status_unknown` | 未知状态、形状或不能分类的错误；检查 CLI/本机配置，不自动登录 |
+| `feishu_profile_refresh_failed` | 刷新服务失败或调用后仍需刷新；保留原任务并排查 |
+| `feishu_permission_denied` | 核对原表权限、scope 或访问策略，不切换账号 |
+| `feishu_rate_limited` | 只读重试已达上限，稍后续接原任务 |
+| `feishu_network_error` | 检查网络或服务；不当作凭证失效 |
+
+这些引导使用 `secret-book.profile-guidance/v2`、退出码 `3`。只读瞬时错误最多 3 次，
+单次超时 60 秒、退避 1/2 秒；未知和确定性错误不重试。写入超时或网络故障返回 `121`
+且不盲重试。上游错误消息可能含敏感数据，回复仅使用分类后的信息。
+
+同一 workflow 在身份/访问中断后保留原操作和确认。用 `workflow status` 取回任务 token，
+用 `configure-status` 核对业务保存摘要，再以原参数续接；来源、身份、记录、映射或文件变化
+仍会使确认失效。已写入或结果未知的请求继续由原写入记录阻止重放。
+
 ## 常用命令
 
 | 操作 | 命令 |
@@ -96,7 +128,7 @@ uv run --project "$SkillDir" "$SkillDir/scripts/secret_book.py" repair-ids --nam
 `save` 从标准输入读取 dotenv，不从命令参数读取凭证值：
 
 ```bash
-printf '%s\n' 'GITHUB_TOKEN=<token>' | \
+printf '%s\n' 'GITHUB_TOKEN=' | \
   uv run --project "$SKILL_DIR" "$SKILL_DIR/scripts/secret_book.py" save \
   --name "<名称>" --service github --purpose "<用途>" --use-global-config \
   --workflow "<维护任务id>" --workflow-agent "<实际宿主>"
@@ -108,6 +140,18 @@ PowerShell 管道需使用 UTF-8，`$Payload` 仅代表已获授权的内存输�
 $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 $Payload | uv run --project "$SkillDir" "$SkillDir/scripts/secret_book.py" save --name "<名称>" --service github --purpose "<用途>" --use-global-config --workflow "<维护任务id>" --workflow-agent "<实际宿主>"
 ```
+
+原生 Windows 使用上面的 PowerShell 入口。仅创建待补值记录时，可先设 `$Payload = "GITHUB_TOKEN="`（替换为已确认的实际键名；多个键用 PowerShell 换行连接），再传入该管道；此输入不包含密钥值。
+
+先按[维护者流程](roles.md#凭证提供者维护者)让用户确认使用对象分析结果或其提供的确切配置，再执行 `save`。`name`、`service`、`purpose` 和 `secret` 的键名须已明确；至少提供一行 `KEY=`。每行首个 `=` 后是值的原文，不去引号、不转义。未提供的 Value 留空，已提供的 Value 保留，允许全部或部分键缺值；不能把示例值或“待填写”写成实际 Value。
+
+需要限制可见人员时，在同一次 `save` 中重复传入 `--visible-to <open_id>`。这些 ID 必须来自已核对的实际人员和已确认的名单，不能猜测。未指定该参数表示不额外限制通过 Secret Book 取用；名单有待确认时不先创建无限制记录。人员字段不会自动授予飞书表权限；已有记录的名单调整仍在飞书界面完成。
+
+创建成功返回 `status=record_created`、记录编号 `id`、名称 `name`、键名 `keys`、待填键名 `missing_keys` 和飞书记录标识 `record_id`，不返回值。空值创建是成功状态，Agent 按[补值链接交付](roles.md#补值链接交付)在当前回复给出完整可点击的表链接和待补 Value 清单，让用户只补该记录的值。创建时自动生成编号，后续不需要 `repair-ids`；网络写入结果不明时仍先核对，不能再次创建同名记录。
+
+`record_url` 来自官方 CLI 的只读记录链接接口，`link_status=available` 时可附上完整可点击的记录直达链接；获取失败时为 `unavailable`，记录创建仍然成功。此时在本条回复正文重新贴出此前确认的完整表链接，再给记录名称定位；不能只转述“沿用此前链接”或只列编号。获取链接不会修改飞书分享权限。缺少所需 Value 时，`run`／`copy` 返回 `record_values_missing`，业务配置流程返回 `missing_keys`，均附待补键名；这些提示也遵守同一链接交付规则。
+
+`list` 只读取元数据，可列出待补记录，不判断密钥是否完整。`get` 允许空 Value，输出 `keys` 和 `missing_keys`，不返回值。`run` 注入所选记录的全部键，须先补齐这些值；`copy --key` 只要求所选键有值，`configure` 按实际映射和业务要求校验需要的键。所需值为空时提示在原记录补齐，再继续取用；不传递空值，也不要求重新创建记录。
 
 `config list/use` 直接管理全局配置，不接受 `--use-global-config`。`save`、`list`、
 `get`、`configure`、`run --id/--name/--auto` 和 `copy` 要使用全局当前配置时，必须显式添加这个参数。`run --requirements` 已移除，不再包装业务程序启动。保存配置的完整确认流程见 [接入流程](consumer-setup.md)。

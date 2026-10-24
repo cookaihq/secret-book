@@ -1,9 +1,9 @@
 ---
 name: secret-book
 metadata:
-  version: "2.5.4"
+  version: "2.6.2"
 description: >-
-  v2.5.4｜令牌：把 token、API key、账号密码、OSS/数据库等配置组保存到用户自己的
+  v2.6.2｜令牌：把 token、API key、账号密码、OSS/数据库等配置组保存到用户自己的
   飞书令牌表里，agent 按意图或精确 ID 查询取用，取用输出一律掩码；本机可保存多套
   有名称的令牌配置，并持久切换唯一的当前配置（默认配置）。当用户说
   "存一下这个 token/API key/密钥/凭证"、"用我存的 xx 推送/登录/调用"、"我的
@@ -63,6 +63,11 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$SkillDir/scripts/check
 整套 Skill 安装完成时，必须按[安装完成后的角色选择](references/roles.md#安装完成后的角色选择)
 收尾：先向用户介绍四个角色各自怎样使用 Secret Book，再让用户选择本次角色。
 完成选择后才进入相应角色的业务准备；安装收尾不以 Agent 推断代替用户选择。
+
+添加、设置或配置凭证时，先读并完成[明确配置需求](references/roles.md#明确配置需求)，再判断角色。
+仅有服务名和表链接时，先让用户指定使用对象或选择提供确切配置，并等待答复；此阶段只读 Secret Book 流程和已有用户上下文。
+对象选定后才读取它的配置说明、声明和代码并分析；确切配置路径只整理用户给出的要求，不另找候选对象分析。之后按相应角色继续查表和业务任务。
+用户已明确对象或要求时沿用，不重复询问；“角色无需重复确认”不适用于尚未确定的配置对象。
 
 每次调用必读 [角色与首次使用](references/roles.md) 的“确定角色”和“检查实际状态”，
 再读取当前角色部分。日常调用及已有业务任务补齐依赖后，
@@ -265,8 +270,18 @@ SECRET_BOOK_CONFIGS_JSON='{"schema_version":1,"active_id":"cfg_xxxxxxxxxx","conf
 目标 profile；禁止调用 `lark-cli profile use`，也不能用全局 active profile 代替配置中的
 profile。
 
+可自动刷新的 user 身份仍属于可用登录：`auth status` 的 `available=true`，且
+`status/tokenStatus` 为 `ready/valid` 或 `needs_refresh/needs_refresh`。以较新的
+auth 快照为准，不被 profile-list 中较旧的 `valid`、`needs_refresh` 或 `expired` 单独否决。
+已有表由脚本读取该表字段元数据触发公开自动刷新，复核原 appId/openId 后继续；
+首次连接仍先确认身份。正常业务读回结果前也复核身份，防止 CLI 在请求中自行刷新后漂移。
+完整分类及恢复见 [可刷新登录态](references/cli.md#可刷新登录态与错误分类)。
+
 - `error_kind` 为 `feishu_cli_context_unbound`，或 CLI 直接报告某 Agent 上下文未绑定时，
   先按 [Lark CLI 上下文检查](references/cli.md#lark-cli-上下文检查)处理；不要当成账号未登录继续发起授权。
+- `feishu_profile_status_unknown`、`feishu_profile_refresh_failed`、`feishu_network_error`、
+  `feishu_rate_limited`、`feishu_permission_denied` 分别按脚本原因排查并保留原任务；
+  这些状态不提供登录动作，不因此改绑身份或重发业务写入。
 - 全局命名配置需要改绑身份时，使用 `config rebind`，再次经过两阶段确认。
 - 项目配置仅缺两个身份固定值时，先向用户展示 `observed_identity`；确认后只把
   `SECRET_BOOK_FEISHU_APP_ID`、`SECRET_BOOK_FEISHU_USER_OPEN_ID` 写回
@@ -284,7 +299,7 @@ profile。
 
 1. 在本次业务的实际环境中运行 `lark-cli profile list`，对候选执行
    `lark-cli auth status --json --profile <name>`（本地检查，单次超时 30 秒，不加 `--verify`）。
-   只把 user 身份有效的条目列为已登录账号；检查失败报告具体原因，不当成空列表。
+   将上述正常及可刷新 user 状态列为已登录账号；未知状态保持拒绝，检查失败报告具体原因，不当成空列表。
    候选为空时也需检查上下文：已有或选定目标 profile 时仍执行上述 status；尚未选定时，
    可仅用 `lark-cli auth status --json` 做本地上下文诊断，其结果不能用作业务身份。
    出现上下文未绑定错误时先走上述上下文检查，处理完成前不创建 profile、绑定应用或发起登录。
@@ -304,19 +319,28 @@ profile。
    | 首次使用有多个可用账号，尚未选定 | 选择已登录账号（推荐）／登录其他账号／暂不继续；第一项继续展示实际候选供选择 |
    | 已有配置绑定的账号过期、缺失或身份不符 | 重新登录原账号（推荐）／登录其他账号／暂不继续；有合适的已登录候选时另提供“选择已登录账号并确认改绑” |
 
-   用户已明确选择账号或要求登录其他账号时，直接推进对应分支；同一未完成授权按下节续接。
+   用户已明确选择账号或要求登录其他账号时，直接推进对应分支；同一未完成账号授权按
+   [split-flow](#profile-授权的-split-flow) 续接。
    选择暂不登录／继续时停止需要飞书身份的步骤，保留任务进度，不自动发起授权或访问表。
-3. 用户选择登录后，依据当前 CLI 的 `--help` 使用实际支持的应用准备入口，
-   需要绑定时执行已确认的方案并显式传 `--identity user-default`；不因检测到 Hermes 等环境就
-   覆盖绑定或强制初始化另一应用。需要新应用或持久保存应用凭据时另按实际影响取得授权。
-4. 首次登录或登录其他账号需新建 profile 时，使用用户明确指定的名称；未指定时直接使用
-   **`secret-book-feishu`**，无需为默认名另行询问。应用仍按上面的流程确认。
+3. 首次登录或登录其他账号需新建 profile 时，先确定名称：使用用户明确指定的名称；未指定时直接使用
+   **`secret-book-feishu`**，无需为默认名另行询问。应用按下一步确认。
    已有配置的修复、原账号重新登录和同一授权续接沿用原 profile，默认名只用于未指定名称的新建流程。
    同名 profile 已存在时先核对其应用、账号和用途，适合本次已选身份才复用；被其他账号或应用占用时，
    请用户另定名称。不覆盖其他账号登录态，不用 `profile use` 或 `profile add --use` 切换全局状态。
-   按当前 CLI 帮助准备好目标 profile 后，执行下节的 split-flow。首次登录没有脚本动作时，
-   使用下节明确列出的命令；登录其他账号则为新目标固定同一组 start/resume/status 参数，
-   不把旧配置的修复动作静默改指新账号。已有授权请求时沿用下节的续接与重新授权约束。
+4. **先复用应用，再准备账号登录**：已有合适的应用/profile 时直接使用；仅重新登录原账号
+   不需要创建应用。需要绑定当前 Agent 的已有应用时，核对 `config bind --help`，执行
+   已确认的来源、应用和环境方案，显式传 `--identity user-default`。上下文冲突先处理，
+   不清洗环境变量，不默认使用 `--force-init`。
+   确实没有可复用应用时，先说明将创建飞书应用、由 CLI 在当前环境保存应用配置和目标
+   profile，取得用户对此的明确授权；“登录飞书”本身不等于同意新建应用。
+   获准后按[网页创建飞书应用](#网页创建飞书应用)执行。只有用户明确选择接入已有应用、
+   且本机不能复用或绑定时，才核对 `profile add --help` 走已有应用入口；Secret 从
+   用户已授权的本机来源直接送入 `--app-secret-stdin`，不经聊天、argv 或中转文件。
+   来源未准备好时再说明本机输入方式，不把手抄 App ID、临时文件保存 App Secret
+   作为新应用的默认步骤。
+   应用准备成功并回读目标 profile 后，执行[profile 授权的 split-flow](#profile-授权的-split-flow)。
+   首次登录没有脚本动作时，使用其中明确列出的命令；登录其他账号则为新目标固定同一组
+   start/resume/status 参数，不把旧配置的修复动作静默改指新账号。已有授权请求沿用其续接约束。
    profile 设置成功并回读后，在回复正文告知实际名称，并明确提示：**“这个名字可以修改，
    之后告诉我新名称即可。”** 仍在等待授权或创建失败时，如实报告待完成状态。
 5. 登录完成后读取实际用户名、profile、`app_id` 和 `open_id`，按本节上方的两阶段流程
@@ -326,12 +350,47 @@ profile。
 用户之后要求改名时，核对当前 CLI 的 `profile rename --help`，并按原来源更新受影响的
 Secret Book profile 引用、回读实际身份；飞书账号和应用不因改名而更换。
 
+### 网页创建飞书应用
+
+仅在上节已确认新应用、保存影响及目标 profile 后进入。先读取当前
+`lark-cli config init --help`；官方 CLI 1.0.97 支持的网页创建入口为：
+
+```text
+lark-cli config init --new --name <已确定的profile>
+```
+
+命令会阻塞等待用户在网页完成，再由 CLI 自动接收并保存应用配置。`--new` 跳过交互
+菜单；不要添加账号登录专用的 `--no-wait` / `--device-code`。当前 CLI 不支持时报告
+版本与具体限制，再讨论升级或用户选择的已有应用方案，不静默改走手填。
+
+1. **后台启动**：通过宿主的脚本执行工具启动，设 600 秒墙钟总期限，使用同一任务句柄
+   探活、取输出和停止。将句柄、目标 profile、开始及截止时间保存在宿主可跨轮恢复的
+   任务记录中；不能保留任务句柄或强制限时时，先报告限制，不启动无人管理的进程。
+   600 秒是本机等待预算，不是链接有效期；网页有效期只按 CLI／页面实际信息说明，未知则不猜。
+2. **展示网页入口**：从原任务输出提取实际 verification URL，原样展示为“创建飞书应用”，
+   请用户打开网页，页面提供扫码时由用户本人扫码。只显示链接、profile 和期限，不转储
+   整段 CLI 输出，不把 App Secret、令牌或授权码写入日志、临时文件或任务记录。
+   提供链接后结束当前轮等待用户，不先等阻塞命令退出才显示链接。
+3. **续接原任务**：用户回复网页已完成后，先探活并读取原任务结果；仍在运行且未到期时
+   继续原任务。退出成功后运行 `lark-cli profile list`，回读目标 profile 及实际 `app_id`，
+   不让用户抄写。应用就绪后再进入同一 profile 的账号登录 split-flow，展示账号授权
+   链接／二维码；沿用前面已明确的登录选择，仅获准创建应用时先补齐账号选择。
+   最终仍须核对实际 `open_id` 并确认身份。应用创建成功不等于账号登录成功。
+4. **停止与失败**：取消、到期或出错时用脚本工具停止本轮任务并核对已退出。任务句柄
+   丢失或写入结果不明时，先在原环境检查 profile 和网页结果，不重跑 `config init --new`，
+   不自动删除应用/profile。查清上次结果并取得新的创建授权后才可重开；网络或权限错误
+   按实际原因处理，不靠重复建应用恢复。
+
+`OPENCLAW_HOME` / `HERMES_HOME` 等 Agent 上下文中优先采用已确认的 `config bind` 方案；
+只有用户明确要求在该工作区内创建**独立新应用**时，才按当前帮助增加 `--force-init`。
+网页流程也不改变此边界，不覆盖已有同名 profile 或其他账号登录态。
+
 ### profile 授权的 split-flow
 
 `auth_split_flow` 必须按下面的阶段推进，用户文字本身不能证明本机登录已成功：
 
 1. `AUTH_REQUEST_CREATED`：从动作的 `profile` 确定目标 profile。若该字段是
-   `<profile-name>`，先按上节的命名规则和应用准备流程确定 profile，再把它固定用于本轮所有命令。执行
+   `<profile-name>`，先按[账号选择与登录](#飞书账号选择与登录)的命名规则和应用准备流程确定 profile，再把它固定用于本轮所有命令。执行
    `start_argv_template`，即 `lark-cli auth login --profile <profile> --domain base
    --no-wait --json`。如果上游错误返回明确的 `missing_scopes`，只请求本次操作需要的
    最小 scope。
@@ -419,11 +478,15 @@ resource namespace 的自动绑定。禁止把裸 ID 自动归到当前配置。
 
 ## 令牌记录动作
 
+新增记录先按[凭证提供者／维护者流程](references/roles.md#凭证提供者维护者)明确使用对象或确切配置要求，分析并展示 `name`、`service`、`purpose`、`secret` 方案，由用户确认后创建。Agent 负责记录与编号；未提供的 Value 留空，用户只在创建好的记录中补值。
+
+**每次提示用户补填或修改 Value，都按[补值链接交付](references/roles.md#补值链接交付)在当前回复正文重贴完整、可点击的多维表格链接**，再说明记录名称、键名和填写位置。
+
 | 动作 | 命令 | 可观察结果 |
 |---|---|---|
-| 保存 | `printf '%s\n' 'GITHUB_TOKEN=...' \| … save --name github-main --service github --purpose '主账号推送' --use-global-config` | stdin 接收 dotenv；输出记录名、`sec_` ID、键数量和键名 |
+| 保存 | `… save --name github-main --service github --purpose '主账号推送' --use-global-config` | 按[当前宿主的输入方式](references/cli.md#凭证输入与配置选择)从 stdin 传入 dotenv；允许待补 Value，自动编号并输出记录定位、键名和待补值状态 |
 | 列表 | `… list --use-global-config` | 只读取并输出 id/name/service/account/purpose/expires_at，不读取 secret/notes |
-| 查看一条 | `… get --name github-main --use-global-config` | 输出元数据、visible_to、notes 和键名，不输出值；一次只能指定一个 name 或 id |
+| 查看一条 | `… get --name github-main --use-global-config` | 输出元数据、visible_to、notes、键名和待补值状态，不输出值；一次只能指定一个 name 或 id |
 | 执行 | `… run --id sec_xxx --use-global-config -- <命令>` | 把全部键值注入子进程环境，输出键名与命令，透传子进程退出码 |
 | 执行并绑定 | `… run --id sec_xxx --bind --use-global-config -- <命令>` | 仅子进程退出码为 0 时保存自动绑定 |
 | 自动执行 | `… run --auto --use-global-config -- <命令>` | 使用当前令牌表对应的历史绑定；无绑定、旧绑定或失效绑定退出 3 |
@@ -437,6 +500,9 @@ resource namespace 的自动绑定。禁止把裸 ID 自动归到当前配置。
 
 payload 每行格式为 `KEY=value`，值是首个 `=` 后的原文，不去引号、不转义；
 必须单行。SSH 私钥、证书等多行内容先由用户转为单行 base64，用时自行解码。
+创建记录和查看详情允许 `KEY=`，也允许已填值与空值混合；至少提供一个已确认的键名。
+`list` 不读取 secret，列出记录不代表值已齐全。实际取用所需的 Value 尚空时，提示在原记录补齐；
+不向业务配置、子进程或剪贴板传递待补空值。完整输入与返回结果见 [CLI 说明](references/cli.md#凭证输入与配置选择)。
 
 ## 可见范围
 
@@ -445,6 +511,8 @@ payload 每行格式为 `KEY=value`，值是首个 `=` 后的原文，不去引�
 list/get/run/copy 全部路径中不可见，没有绕过 flag。`save` 的名称查重例外地跨
 全表执行，避免隐藏记录导致重名。旧表缺此列时，既有查表接口仍按不限制处理；
 首次连接须通过完整字段检查，缺列交管理员经授权运行 `init-adopt` 补建。
+新增受限记录用可重复的 `save --visible-to <open_id>`，把已确认名单与记录一并写入；
+人员身份尚未核实时先核对，不先建无限制记录。名单不授予飞书表权限，也不能阻止有表权限者直接查看明文。
 `list/get/run/copy/configure` 不补写记录 ID；缺 ID 的目标记录由维护者显式处理。
 
 ## 自动绑定
@@ -467,7 +535,8 @@ SHA-256；`bindings.json` 只保存哈希和其它元数据，不保存这四个
 先让调用者报告字段、实际来源和证据，区分配置问题与网络、余额、权限、限流等错误。
 提供“修改本机配置 / 从 secret-book 选择配置修复”，已有明确选择则沿用。选择手填时
 不查表。选择 secret-book 时按 [业务配置流程](references/consumer-setup.md) 准备版本、
-飞书身份和令牌表；新用户可以中途改为手填，无记录或缺项时让其在自己的表或文件中填写。
+飞书身份和令牌表；新用户可以中途改为手填文件。无记录且用户要求新增时，转入维护者流程由 Agent 创建；
+已有记录缺 Value 时，按[补值链接交付](references/roles.md#补值链接交付)给出完整可点击链接，让维护者在该记录补值，保持原取用目标。
 
 展示真实记录/账号、表中 key、映射、准确写入文件和替换项，唯一候选首次也确认。
 修复原来源；新增才决定保存位置。业务配置可持久保存时，不把每次 `run` 取值当作默认。

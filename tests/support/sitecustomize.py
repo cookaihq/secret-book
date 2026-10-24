@@ -1,6 +1,7 @@
 """Fault injection for process-level atomic-write tests; inactive by default."""
 
 import os
+import json
 import stat
 import subprocess
 import sys
@@ -19,6 +20,21 @@ if os.name == "nt" and os.environ.get("FAKE_LARK_STATE"):
             super().__init__(args, *positional, **kwargs)
 
     subprocess.Popen = FakeLarkPopen
+
+
+if os.environ.get("FAKE_LARK_TIMEOUT_SHORTCUT"):
+    _run = subprocess.run
+
+    def timeout_lark(args, *positional, **kwargs):
+        if (isinstance(args, (list, tuple)) and args[:2] == ["lark-cli", "base"]
+                and args[2] == os.environ["FAKE_LARK_TIMEOUT_SHORTCUT"]):
+            with Path(os.environ["FAKE_LARK_LOG"]).open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(args[1:]) + "\n")
+            assert kwargs["timeout"] in (60, 120)
+            raise subprocess.TimeoutExpired(args, kwargs["timeout"])
+        return _run(args, *positional, **kwargs)
+
+    subprocess.run = timeout_lark
 
 
 FAULT = os.environ.get("SECRET_BOOK_TEST_ATOMIC_FAULT")

@@ -184,7 +184,7 @@ class Configuration:
                 self.guidance("record_unavailable", record_id=sid, message="记录不存在、不可见或 ID 不唯一；请重新选择")
             record = matches[0]
             records.append({key: record.get(key, "") for key in ("id", "name", "service", "account")})
-            for key, value in self.api.parse_payload(record["secret"]).items():
+            for key, value in self.api.parse_payload(record["secret"], allow_empty=True).items():
                 if key not in mapping.values():
                     continue
                 if key in pairs:
