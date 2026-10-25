@@ -12,7 +12,7 @@
 
 1. 从实际调用上下文确认当前 Agent，不按哪个目录存在推测。先运行 `agent-rule --agent <agent>` 做只读检查。可用值和宿主限制见 [Agent 规则检查](agent-rules.md)。自定义配置目录传 `--config-dir`；OpenClaw 使用实际 `--workspace` 或已确认的 `--agent-id`。未知宿主由 Agent 核对其实际加载说明，不冒用其他宿主名称。
 2. 报告已有说明是否为旧规则、手写规则待审、存在覆盖/冲突或只在当前项目生效。`managed_current_static` 只说明文件中存在当前受管理块；不证明当前会话加载。文件缺失不自动创建，旧规则不自动覆盖。准备安装或更新时，先按 [修改规则](agent-rules.md#修改规则)在回复正文展示目标、范围、变更方式和完整规则代码块，再提供确认选项；按用户对该预览已有的明确授权或新确认执行。多路径指向同一实体只改一次，保持 symlink。业务密钥永不写进 Agent 规则文件。
-3. 从业务产物读取 `references/credentials.json` 或其真实声明。用调用者自己的配置检查入口，在实际工作目录和相同启动环境生成 `secret-book.config-inspection/v1` 报告。报告应包含读取层、每字段来源和缺项/格式问题，**不含值**。不知道配置如何读取时，先查代码或说明，不能靠目录名称猜测。
+3. 从业务产物读取 `references/credentials.json` 或其真实声明。用调用者自己的配置检查入口，在实际工作目录和相同启动环境生成无值报告：dotenv 使用 `secret-book.config-inspection/v1`；声明含 native_writer 时直接走[原生配置契约](native-consumer.md)的 `secret-book.native-inspection/v1`，不套用下方 dotenv 路径表。报告应包含读取层、每字段来源和缺项/格式问题，**不含值**。不知道配置如何读取时，先查代码或说明，不能靠目录名称猜测。
 4. 区分首次新增与修复现有设置。业务方应说明错误依据：缺项/格式检查、鉴权拒绝、或其他明确证据。401 表示服务拒绝当前认证组合，仍需核对 Key、服务地址和账号；网络异常、402 余额、403 权限、429 限流不能直接判定 Key 填错。配置修复不授权自动重发业务请求。
 5. 用户选择修改本机文件时，交回业务方指导本机填写，不访问飞书。选择 secret-book 后才查询记录；已明确的管理方式和保存位置继续沿用。仅本轮、短期令牌、明确不落盘或目标不支持保存时，见下文临时取用。
 
@@ -40,7 +40,7 @@
 
 全局读取仍遵守调用者的启用条件。Plugin 默认自动读取；独立 Skill 不因使用 secret-book 就绕过其全局读取 flag。首次新增默认不预建 Skill 子目录。修复存在的子目录文件则必须写回那里。
 
-`configure` 当前处理普通单行 dotenv 配置。结构化身份组、宿主的只读回退、JSON/YAML 配置或持久化注入脚本需要业务方专用写入入口，不以通用 dotenv 写入替代。写入器支持 macOS/Linux 和原生 Windows；权限与实际验证范围见 README。
+`configure` 保留普通单行 dotenv 契约。声明含 `native_writer` 且来源报告为 `secret-book.native-inspection/v1` 时，必须读 [原生配置契约](native-consumer.md)，使用已登记的业务适配器保存 JSON/TOML/YAML；当前登记对象为 Setup AIHub 2.1.0+ 的 setup-agent-model，需要 Secret Book 2.7.0+。不接受任意写入命令，也不将原生字段重定向为 dotenv。其他结构化身份组、宿主回退或注入脚本仍需专门契约。平台与客户端验证范围分别见 README。
 
 ## 预览、确认、写入与验证
 

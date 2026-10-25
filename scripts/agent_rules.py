@@ -8,12 +8,13 @@ import json
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 VERSION = 6
 BEGIN = re.compile(r"<!-- secret-book:fallback-rule v(\d+) -->")
 END = "<!-- /secret-book:fallback-rule -->"
-AGENTS = ("codex", "claude-code", "hermes", "openclaw", "workbuddy", "codebuddy", "gemini",
+AGENTS = ("codex", "chatgpt", "claude-code", "claude-desktop", "hermes", "openclaw", "workbuddy", "codebuddy", "gemini",
           "opencode", "copilot", "cursor", "cline", "windsurf", "qwen", "iflow", "amp", "goose")
 
 
@@ -120,7 +121,7 @@ def inspect_agent(agent, *, cwd=None, config_dir=None, workspace=None, agent_id=
     def conf(default, env_key=None):
         return Path(config_dir or (os.environ.get(env_key) if env_key else None) or default).expanduser()
 
-    if agent == "codex":
+    if agent in ("codex", "chatgpt"):
         base = conf(home / ".codex", "CODEX_HOME")
         primary = choose(base, ["AGENTS.override.md", "AGENTS.md"], "global")
         fallback = []
@@ -139,7 +140,9 @@ def inspect_agent(agent, *, cwd=None, config_dir=None, workspace=None, agent_id=
             notes.append("无法解析 Codex config.toml；fallback 名称和文档预算需要人工核对")
         for directory in directories:
             choose(directory, ["AGENTS.override.md", "AGENTS.md", *fallback], "project")
-    elif agent == "claude-code":
+        if agent == "chatgpt":
+            notes.append("ChatGPT 桌面独立宿主；此处仅核对已选本地执行环境的规则候选，云端容器、profile 与实际加载须在桌面核验")
+    elif agent in ("claude-code", "claude-desktop"):
         base = conf(home / ".claude", "CLAUDE_CONFIG_DIR")
         primary = base / "CLAUDE.md"
         add(primary, "global", "selected")
@@ -149,8 +152,13 @@ def inspect_agent(agent, *, cwd=None, config_dir=None, workspace=None, agent_id=
                 add(directory / relative, "project")
             rules(directory / ".claude/rules", "project")
         notes.append("需核对 Claude Code 实际 /memory、设置中的排除项、imports 和托管策略")
+        if agent == "claude-desktop":
+            notes.append("Claude 桌面独立宿主；此处仅适用于 Code 本地会话，Chat/Cowork 的同步技能和 VM 文件边界不能由 CLI 规则推断")
     elif agent == "hermes":
-        base = conf(home / ".hermes", "HERMES_HOME")
+        suffix = os.environ.get("HERMES_DATA_DIR_SUFFIX", "")
+        default = (Path(os.environ.get("LOCALAPPDATA") or home / "AppData/Local") / ("hermes" + suffix)
+                   if sys.platform == "win32" else home / (".hermes" + suffix))
+        base = conf(default, "HERMES_HOME")
         add(base / "SOUL.md", "global_identity", "selected")
         primary = cwd / ".hermes.md"
         for directory in directories:

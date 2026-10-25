@@ -1,9 +1,9 @@
 ---
 name: secret-book
 metadata:
-  version: "2.6.2"
+  version: "2.7.0"
 description: >-
-  v2.6.2｜令牌：把 token、API key、账号密码、OSS/数据库等配置组保存到用户自己的
+  v2.7.0｜令牌：把 token、API key、账号密码、OSS/数据库等配置组保存到用户自己的
   飞书令牌表里，agent 按意图或精确 ID 查询取用，取用输出一律掩码；本机可保存多套
   有名称的令牌配置，并持久切换唯一的当前配置（默认配置）。当用户说
   "存一下这个 token/API key/密钥/凭证"、"用我存的 xx 推送/登录/调用"、"我的
@@ -151,6 +151,8 @@ Windows 解释器固定到 `.venv/Scripts/python.exe`；配置个人目录来自
 位置，无决定才建议个人全局。`configure` 先预览，再凭用户确认的 token 写入；
 `configure-status` 可恢复待确认请求。写完让业务方直接读自己的配置并验证，正常运行
 不访问 secret-book，不自动同步表中轮换。值不进入聊天、argv 或规则文件。
+
+Setup AIHub 的 setup-agent-model 交来原生报告时，读取 [原生配置契约](references/native-consumer.md)：2.7.0 支持已登记的 JSON/TOML/YAML 写入器，Key 直接进入客户端原生字段。沿用业务方已选文件/模型，Secret Book 负责记录、映射、一次保存确认与公开恢复，业务方独立复查。`chatgpt` 和 `claude-desktop` 保留独立宿主身份，核对实际本机执行入口。现有 dotenv 调用方继续按原契约执行。
 
 用户选择手填文件时不查表，也不要求安装 secret-book。`run --requirements` 已移除；
 旧命令绑定只用于用户明确的临时取用场景，不能推断成 Plugin 配置。

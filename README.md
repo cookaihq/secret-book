@@ -4,6 +4,9 @@ Secret Book 帮你通过 Claude Code、Codex 或 WorkBuddy 管理和取用飞书
 
 添加或设置凭证时，Agent 先明确你要配置的 Skill、Plugin、项目或确切配置要求。新增记录由 Agent 在确认后创建；尚未提供的密钥值可以留空，你只需打开创建好的记录补值。
 
+
+2.7.0 开发候选增加 Setup AIHub 的原生模型配置保存：你在 setup-agent-model 选好客户端和模型后，可说“从 Secret Book 选择 Key 并保存”。Secret Book 确认记录、字段映射及准确原生文件后保存，Setup 独立复查；Key 不改存到 .env。需要完整 Setup AIHub 2.1.0+，现有 dotenv 配置继续使用原流程。六种目标格式已做 Windows 合成联调；ChatGPT 桌面、Claude 桌面和 Hermes 保留独立宿主身份，完整六客户端及 macOS 新契约尚未验收通过。开发候选未发布时，远端旧版不具备此能力。
+
 ## 使用前需要知道
 
 - **凭证以明文保存在飞书表和业务本机配置中，不加密。Secret Book 不是密码管理器。** 飞书平台方和拥有相应表格权限的人可以查看数据。
@@ -280,7 +283,7 @@ Git 安装在 Windows 使用随包 PowerShell 检查，在 macOS/Linux/WSL 使�
 <!-- release-table:begin -->
 | 目标 | 版本 | Release |
 |---|---|---|
-| secret-book | 2.6.2 | [v2.6.2](https://github.com/cookaihq/secret-book/releases/tag/v2.6.2) |
+| secret-book | 2.7.0 | [v2.7.0](https://github.com/cookaihq/secret-book/releases/tag/v2.7.0) |
 <!-- release-table:end -->
 
 ## License

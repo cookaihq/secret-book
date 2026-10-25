@@ -92,7 +92,7 @@ def test_openclaw_multiple_instances_json5_and_workspace_are_not_guessed(cli):
 
 def test_hermes_cursor_and_disabled_rules_expose_limitations(cli):
     soul = write(cli.home / ".hermes/SOUL.md", "You are a helpful assistant.")
-    report = check(cli, "hermes")
+    report = check(cli, "hermes", env={"HERMES_HOME": str(soul.parent)})
     assert any(f["path"] == str(soul) for f in report["files"])
     assert report["suggested_target"] == str(cli.cwd / ".hermes.md")
     assert check(cli, "cursor")["status"] == "unknown"

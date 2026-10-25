@@ -1,7 +1,7 @@
 """Preview and persist selected credentials to the caller's effective dotenv files.
 
-This module never launches the consumer. Inspection comes from its own loader; all
-values travel from the backend to the confirmed files inside this process only.
+The dotenv path writes in process. Registered native contracts delegate format
+handling through a fixed stdin adapter; arbitrary consumer commands are refused.
 """
 import hashlib
 import json
@@ -366,6 +366,14 @@ class Configuration:
 
 def dispatch(api, args):
     config = Configuration(api, args)
+    if config.contract.get("native_writer"):
+        from .native import NativeConfiguration
+        config = NativeConfiguration(api, args)
+    if args.action == "configure-reconcile":
+        if not hasattr(config, "reconcile"):
+            api.die("configure-reconcile 只用于已登记的原生配置写入恢复")
+        config.reconcile()
+        return
     if args.action == "configure-status":
         config.show()
     else:

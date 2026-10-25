@@ -2381,6 +2381,11 @@ def build_parser() -> argparse.ArgumentParser:
     common(sp)
     sp.set_defaults(func=cmd_consumer)
 
+    sp = sub.add_parser("configure-reconcile", help="回读原生写入结果；不查表、不重放保存")
+    sp.add_argument("--requirements", required=True)
+    sp.add_argument("--inspection", required=True)
+    sp.set_defaults(func=cmd_consumer)
+
     sp = sub.add_parser("bindings", help="列出全部自动绑定（bindings.json）")
     sp.set_defaults(func=cmd_bindings)
 

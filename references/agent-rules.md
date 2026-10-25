@@ -17,8 +17,10 @@ uv run --project "${SKILL_DIR}" "${SKILL_DIR}/scripts/secret_book.py" agent-rule
 | `--agent` | 默认入口与补充检查 | 边界 |
 | --- | --- | --- |
 | `codex` | `$CODEX_HOME`（默认 `~/.codex`）中首个非空 `AGENTS.override.md` / `AGENTS.md`；Git 根至 cwd 的项目文件及已配置 fallback 名 | 文档预算、命令行或会话启动加载需要宿主验证 |
+| `chatgpt` | 已核对的本地工作入口使用同一组 Codex 规则候选，但报告保留 ChatGPT 桌面身份 | 云端 hosted skills、桌面实际 profile 与会话加载另验；不能用 CLI 结果代替 |
 | `claude-code` | `~/.claude/CLAUDE.md`、`rules/`，项目 `CLAUDE.md`、`.claude/CLAUDE.md`、`CLAUDE.local.md` 与 rules | 核对 `/memory`、imports、排除设置和托管策略；不无条件断言所有版本都读 AGENTS.md |
-| `hermes` | `$HERMES_HOME/SOUL.md`（默认 `~/.hermes`），项目 `.hermes.md` / `HERMES.md` / AGENTS / CLAUDE 候选 | SOUL 是身份文件；项目入口的选择依版本核对，不虚构全局 `~/.hermes/AGENTS.md` |
+| `claude-desktop` | 仅对桌面 Code 本地会话检查 Claude Code 规则候选，保留独立身份 | Chat/Cowork 同步技能与 VM 文件边界不由 CLI 规则推断；桌面加载另验 |
+| `hermes` | `$HERMES_HOME/SOUL.md`（当前 Windows 默认 `%LOCALAPPDATA%/hermes`，macOS/Linux 默认 `~/.hermes`，HERMES_DATA_DIR_SUFFIX 参与根目录），项目 `.hermes.md` / `HERMES.md` / AGENTS / CLAUDE 候选 | SOUL 是身份文件；项目入口的选择依版本核对，不虚构全局 `~/.hermes/AGENTS.md` |
 | `openclaw` | 当前 Agent 实际 workspace 的 `AGENTS.md` | 优先提供已解析 `--workspace`；配置多实例需 `--agent-id`。JSON5、profile、未知结构不能可靠解析时返回待核对 |
 | `workbuddy` | 标准桌面 `~/.workbuddy/CODEBUDDY.md`、rules；项目 CODEBUDDY/AGENTS 和 `.codebuddy` | 已按 WorkBuddy 5.5.6 代码核对。实际 `CODEBUDDY_CONFIG_DIR` / `WORKBUDDY_CONFIG_DIR` 可改位置，不猜成 WORKBUDDY.md |
 | `codebuddy` | CLI 默认 `~/.codebuddy/CODEBUDDY.md` 与 rules，或实际配置目录 | 与 WorkBuddy 分开确认；IDE/CLI 版本和开关须核对 |

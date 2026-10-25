@@ -23,7 +23,7 @@ def allowed_roles(core, args):
     if args.func in (core.cmd_run, core.cmd_copy):
         return {"consumer"}
     if args.func == core.cmd_consumer:
-        return {"consumer"} if args.action == "configure" else None
+        return {"consumer"} if args.action in ("configure", "configure-reconcile") else None
     if args.func in (core.cmd_list, core.cmd_get, core._connect_existing_table,
                      core.cmd_config_save, core.cmd_config_rebind, core.cmd_config_migrate):
         return connected
