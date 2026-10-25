@@ -5,7 +5,7 @@ Secret Book 帮你通过 Claude Code、Codex 或 WorkBuddy 管理和取用飞书
 添加或设置凭证时，Agent 先明确你要配置的 Skill、Plugin、项目或确切配置要求。新增记录由 Agent 在确认后创建；尚未提供的密钥值可以留空，你只需打开创建好的记录补值。
 
 
-2.7.0 开发候选增加 Setup AIHub 的原生模型配置保存：你在 setup-agent-model 选好客户端和模型后，可说“从 Secret Book 选择 Key 并保存”。Secret Book 确认记录、字段映射及准确原生文件后保存，Setup 独立复查；Key 不改存到 .env。需要完整 Setup AIHub 2.1.0+，现有 dotenv 配置继续使用原流程。六种目标格式已做 Windows 合成联调；ChatGPT 桌面、Claude 桌面和 Hermes 保留独立宿主身份，完整六客户端及 macOS 新契约尚未验收通过。开发候选未发布时，远端旧版不具备此能力。
+2.7.0 增加 Setup AIHub 的原生模型配置保存：你在 setup-agent-model 选好客户端和模型后，可说“从 Secret Book 选择 Key 并保存”。Secret Book 确认记录、字段映射及准确原生文件后保存，Setup 独立复查；Key 写入客户端原生字段。需要完整 Setup AIHub 2.1.0+，现有 dotenv 配置继续使用原流程。六种目标格式已做 Windows 合成联调；ChatGPT 桌面、Claude 桌面和 Hermes 保留独立宿主身份，完整六客户端及 macOS 新契约尚未验收通过。
 
 ## 使用前需要知道
 
